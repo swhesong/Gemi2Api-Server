@@ -16,16 +16,22 @@ import time
 import uuid
 import logging
 
+# 添加 dotenv 支持
+from dotenv import load_dotenv
+
 from gemini_webapi import GeminiClient, set_log_level, logger
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError
+
+# 加载 .env 文件
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 set_log_level("INFO")
 
-app = FastAPI(title="Gemini API FastAPI Server")
+app = FastAPI(title="Gemini API FastAPI Server", version="0.2.0")
 
 # Add CORS middleware
 app.add_middleware(
@@ -41,10 +47,13 @@ gemini_client = None
 client_last_used = None
 CLIENT_IDLE_TIMEOUT = 300  # 5 minutes idle timeout
 
-# Authentication credentials
-SECURE_1PSID = os.environ.get("SECURE_1PSID", "")
-SECURE_1PSIDTS = os.environ.get("SECURE_1PSIDTS", "")
-API_KEY = os.environ.get("API_KEY", "")
+# Authentication credentials - 支持多种环境变量格式
+SECURE_1PSID = os.environ.get("SECURE_1PSID") or os.environ.get("CONFIG_GEMINI__CLIENTS__0__SECURE_1PSID", "")
+SECURE_1PSIDTS = os.environ.get("SECURE_1PSIDTS") or os.environ.get("CONFIG_GEMINI__CLIENTS__0__SECURE_1PSIDTS", "")
+API_KEY = os.environ.get("API_KEY") or os.environ.get("CONFIG_SERVER__API_KEY", "")
+
+# Proxy support
+GEMINI_PROXY = os.environ.get("GEMINI_PROXY", "")
 
 # Client configuration - 使用完整的配置选项
 CLIENT_CONFIG = {
@@ -55,24 +64,33 @@ CLIENT_CONFIG = {
     "refresh_interval": 540,  # 9 minutes
 }
 
+# 如果有代理配置，添加到客户端配置中
+if GEMINI_PROXY:
+    CLIENT_CONFIG["proxy"] = GEMINI_PROXY
+
 # 启动时的配置检查和优化
 @app.on_event("startup")
 async def startup_event():
+    logger.info("🚀 Starting Gemini API FastAPI Server v0.2.0")
+    
     if not SECURE_1PSID:
         if not SECURE_1PSIDTS:
             logger.warning("⚠️ No Gemini credentials provided. Will attempt to use browser cookies if available.")
         else:
             logger.warning("⚠️ Only SECURE_1PSIDTS provided. SECURE_1PSID is required.")
     else:
-        logger.info(f"Credentials found. SECURE_1PSID starts with: {SECURE_1PSID[:5]}...")
+        logger.info(f"✅ Credentials found. SECURE_1PSID starts with: {SECURE_1PSID[:5]}...")
         if SECURE_1PSIDTS:
-            logger.info(f"SECURE_1PSIDTS starts with: {SECURE_1PSIDTS[:5]}...")
+            logger.info(f"✅ SECURE_1PSIDTS starts with: {SECURE_1PSIDTS[:5]}...")
 
     if not API_KEY:
         logger.warning("⚠️ API_KEY is not set or empty! API authentication will not work.")
         logger.warning("Make sure API_KEY is correctly set in your .env file or environment.")
     else:
-        logger.info(f"API_KEY found. API_KEY starts with: {API_KEY[:5]}...")
+        logger.info(f"✅ API_KEY found. API_KEY starts with: {API_KEY[:5]}...")
+
+    if GEMINI_PROXY:
+        logger.info(f"🌐 Proxy configured: {GEMINI_PROXY}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -80,7 +98,7 @@ async def shutdown_event():
     if gemini_client:
         try:
             await gemini_client.close()
-            logger.info("Gemini client closed on shutdown")
+            logger.info("👋 Gemini client closed on shutdown")
         except Exception as e:
             logger.warning(f"Error during client shutdown: {e}")
 
@@ -207,6 +225,24 @@ async def error_handling(request: Request, call_next):
         return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "internal_server_error"}})
 
 
+# Health check endpoint for Docker
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for container orchestration"""
+    return {"status": "healthy", "timestamp": datetime.now(tz=timezone.utc).isoformat()}
+
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "status": "online", 
+        "message": "Gemini API FastAPI Server is running",
+        "version": "0.2.0",
+        "health": "/health"
+    }
+
+
 # Get list of available models
 @app.get("/v1/models")
 async def list_models():
@@ -221,7 +257,7 @@ async def list_models():
         }
         for m in Model
     ]
-    print(data)
+    logger.info(f"Available models: {[d['id'] for d in data]}")
     return {"object": "list", "data": data}
 
 
@@ -294,7 +330,7 @@ def prepare_conversation(messages: List[Message]) -> tuple:
                 if item.type == "text":
                     conversation += item.text or ""
                 elif item.type == "image_url" and item.image_url:
-                    # Handle image - 使用 main1.py 的更安全方式
+                    # Handle image - 使用 tempfile.NamedTemporaryFile 更稳定的方式
                     image_url = item.image_url.get("url", "")
                     if image_url.startswith("data:image/"):
                         # Process base64 encoded image
@@ -303,7 +339,7 @@ def prepare_conversation(messages: List[Message]) -> tuple:
                             base64_data = image_url.split(",")[1]
                             image_data = base64.b64decode(base64_data)
 
-                            # Create temporary file to hold the image (main1.py方式更稳定)
+                            # Create temporary file to hold the image
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                                 tmp.write(image_data)
                                 temp_files.append(tmp.name)
@@ -348,15 +384,15 @@ async def get_gemini_client():
                 gemini_client = GeminiClient()
                 
             await gemini_client.init(**CLIENT_CONFIG)
-            logger.info("Gemini client initialized successfully with enhanced features")
+            logger.info("✅ Gemini client initialized successfully with enhanced features")
         except AuthError as e:
-            logger.error(f"Authentication failed: {str(e)}")
+            logger.error(f"❌ Authentication failed: {str(e)}")
             raise HTTPException(
                 status_code=401, 
                 detail="Authentication failed. Please check your cookies."
             )
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {str(e)}")
+            logger.error(f"❌ Failed to initialize Gemini client: {str(e)}")
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to initialize Gemini client: {str(e)}"
@@ -375,15 +411,15 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
         
         # 转换消息为对话格式
         conversation, temp_files = prepare_conversation(request.messages)
-        logger.info(f"Prepared conversation: {conversation}")
-        logger.info(f"Temp files: {temp_files}")
+        logger.info(f"📝 Prepared conversation: {conversation[:200]}...")
+        logger.info(f"🖼️ Temp files: {temp_files}")
         
         # 获取适当的模型
         model = map_model_name(request.model)
-        logger.info(f"Using model: {model}")
+        logger.info(f"🤖 Using model: {model}")
         
         # 生成响应，使用重试机制
-        logger.info("Sending request to Gemini...")
+        logger.info("🚀 Sending request to Gemini...")
         max_retries = 3
         response = None
         
@@ -399,7 +435,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
                     response = await gemini_client_local.generate_content(conversation, model=model)
                 break
             except (AuthError, APIError, TimeoutError) as e:
-                logger.warning(f"Request attempt {attempt + 1} failed: {str(e)}")
+                logger.warning(f"⚠️ Request attempt {attempt + 1} failed: {str(e)}")
                 if attempt == max_retries - 1:
                     # 对于特定的异常类型，抛出相应的HTTP异常
                     if isinstance(e, AuthError):
@@ -417,10 +453,10 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
         if response is None:
             raise HTTPException(status_code=500, detail="Failed to get response after retries")
 
-        # 使用 main1.py 的更清晰的思考内容处理逻辑
+        # 处理响应内容 - 使用清晰的逻辑
         reply_text = ""
         
-        # 提取思考内容 - 使用main1.py的清晰逻辑
+        # 提取思考内容
         if hasattr(response, "thoughts") and response.thoughts:
             reply_text += f"<think>{response.thoughts}</think>\n\n"
         
@@ -436,10 +472,10 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
         # 应用自定义的markdown修正
         reply_text = correct_markdown(reply_text)
         
-        logger.info(f"Response: {reply_text}")
+        logger.info(f"💬 Response generated: {len(reply_text)} characters")
 
         if not reply_text or reply_text.strip() == "":
-            logger.warning("Empty response received from Gemini")
+            logger.warning("⚠️ Empty response received from Gemini")
             reply_text = "服务器返回了空响应。请检查 Gemini API 凭据是否有效。"
 
         # 创建响应对象
@@ -501,17 +537,17 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
                 },
             }
 
-            logger.info(f"Returning response: {result}")
+            logger.info(f"✅ Returning response with {result['usage']['total_tokens']} tokens")
             return result
             
     except HTTPException:
         # 重新抛出HTTP异常
         raise
     except Exception as e:
-        logger.error(f"Unexpected error generating completion: {str(e)}", exc_info=True)
+        logger.error(f"❌ Unexpected error generating completion: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     finally:
-        # 改进的临时文件清理日志 - 结合两个版本的优势
+        # 临时文件清理
         cleaned_files = []
         failed_cleanups = []
         
@@ -521,21 +557,19 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
                 cleaned_files.append(temp_file)
             except Exception as e:
                 failed_cleanups.append((temp_file, str(e)))
-                logger.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
+                logger.warning(f"⚠️ Failed to delete temp file {temp_file}: {str(e)}")
         
         # 记录清理结果
         if cleaned_files:
-            logger.info(f"Successfully cleaned up {len(cleaned_files)} temporary files")
+            logger.info(f"🧹 Successfully cleaned up {len(cleaned_files)} temporary files")
             
         if failed_cleanups:
-            logger.warning(f"Failed to clean up {len(failed_cleanups)} temporary files")
+            logger.warning(f"⚠️ Failed to clean up {len(failed_cleanups)} temporary files")
 
 
 @app.get("/")
 async def root():
     return {"status": "online", "message": "Gemini API FastAPI Server is running"}
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info")
