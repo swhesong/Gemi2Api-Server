@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "browser-cookie3>=0.20.1",
     "fastapi>=0.115.14",
-    "gemini-webapi>=1.14.2",
+    "gemini-webapi>=1.14.3",
     "lmdb>=1.6.2",
     "loguru>=0.7.3",
     "pydantic-settings[yaml]>=2.10.1",
