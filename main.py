@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError, UsageLimitExceeded, ModelInvalid, TemporarilyBlocked
-
+import httpx
 # Environment variables
 SECURE_1PSID = os.getenv("SECURE_1PSID")
 SECURE_1PSIDTS = os.getenv("SECURE_1PSIDTS")  
