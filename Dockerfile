@@ -15,14 +15,23 @@ COPY pyproject.toml .
 # 添加 --retry 3 增加网络稳定性
 RUN uv pip install --system --no-cache-dir .
 
+# 安装 curl 用于健康检查
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # 复制应用程序代码
 COPY main.py .
 # 如果你的代码在 src 目录，使用: COPY ./src ./src
 
+# 创建数据目录
+RUN mkdir -p /app/data
+
 # 暴露端口
 EXPOSE 8000
+
+# 添加健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # 运行 uvicorn 服务器
 # 确保 main.py 在 /app 目录下，或者调整为模块路径，例如 src.main:app
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
