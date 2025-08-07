@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  gemini-api:
+    image: devinglaw/genmini2api:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./cache:/app/.venv/lib/python3.12/site-packages/gemini_webapi/utils/temp
+    env_file:
+      - .env
+    environment:
+      - CONFIG_SERVER__HOST=0.0.0.0
+      - CONFIG_SERVER__PORT=8000
+      - CONFIG_SERVER__API_KEY=${API_KEY}
+      - CONFIG_GEMINI__CLIENTS__0__ID=default-client
+      - CONFIG_GEMINI__CLIENTS__0__SECURE_1PSID=${SECURE_1PSID}
+      - CONFIG_GEMINI__CLIENTS__0__SECURE_1PSIDTS=${SECURE_1PSIDTS}
+      - LOG_LEVEL=info
+      - TZ=Asia/Shanghai
+    restart: on-failure:3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"

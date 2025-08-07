@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: gemi2api-server
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    repo: https://github.com/zhiyu1998/Gemi2Api-Server
+    branch: main
+    envVars:
+      - key: SECURE_1PSID
+        sync: false
+      - key: SECURE_1PSIDTS
+        sync: false
+      - key: API_KEY
+        sync: false
+    healthCheckPath: /
+    autoDeploy: true

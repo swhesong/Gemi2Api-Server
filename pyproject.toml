@@ -1,0 +1,38 @@
+[project]
+name = "gemi2api-server"
+version = "0.2.0"
+description = "A high-performance FastAPI server for Gemini Web API, with browser cookie support, advanced logging, and configuration management."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "browser-cookie3>=0.20.1",
+    "fastapi>=0.115.14",
+    "gemini-webapi>=1.14.2",
+    "lmdb>=1.6.2",
+    "loguru>=0.7.3",
+    "pydantic-settings[yaml]>=2.10.1",
+    "uvicorn[standard]>=0.35.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
+    "python-dotenv>=1.0.0",
+]
+
+# [uv] 工具配置
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
+
+# [dependency-groups] 语法兼容uv/poetry 工作流
+[dependency-groups]
+dev = [
+    "ruff>=0.12.1",
+]
+
+# Ruff 配置
+[tool.ruff]
+line-length = 100  # 设置更标准的行长度
+lint.select = ["E", "F", "W", "I", "RUF"] # 增加了 Ruff 的原生规则 (RUF)
+lint.ignore = ["E501"] # 忽略行长度警告，交由格式化工具处理
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"  # 使用空格缩进

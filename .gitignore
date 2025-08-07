@@ -1,0 +1,8 @@
+.python-version
+.idea
+.venv
+uv.lock
+.env
+__pycache__
+.cursor
+.ruff_cache
