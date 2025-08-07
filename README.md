@@ -112,28 +112,3 @@ docker-compose up -d --build
   <img src="https://contrib.rocks/image?repo=zhiyu1998/Gemi2Api-Server&max=1000" />
 </a>
 
-
-   ```
-    docker-compose up -d && docker-compose logs -f
-    docker login
-    docker buildx create --name genmini2api --driver docker-container --bootstrap
-		 docker buildx use genmini2api
-		 docker buildx ls
-		 cd /root/Gemi2Api-Server-main/
-    docker buildx build --platform linux/amd64,linux/arm64 -t devinglaw/genmini2api:latest --push .
-    docker buildx build --platform linux/amd64,linux/arm64 \
-  --progress=tty \
-  -t devinglaw/genmini2api:latest \
-  --push .
-    docker buildx imagetools inspect devinglaw/genmini2api:latest
-    docker-compose build
-    docker-compose up -d
-    docker-compose logs -f --tail=100
-		docker-compose down --remove-orphans
-		docker-compose pull
-		docker-compose up -d --build
-		docker-compose logs --tail=180
-		docker run --rm -it devinglaw/genmini2api:latest /bin/bash
-		docker exec -it genmini2api/bin/bash
-		
-   ```
