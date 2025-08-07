@@ -17,6 +17,7 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError, UsageLimitExceeded, ModelInvalid, TemporarilyBlocked
 import httpx
+
 # Environment variables
 SECURE_1PSID = os.getenv("SECURE_1PSID")
 SECURE_1PSIDTS = os.getenv("SECURE_1PSIDTS")  
@@ -29,13 +30,13 @@ app = FastAPI(title="Enhanced Gemini API FastAPI Server", version="0.4.0")
 gemini_clients = {}
 client_pool_size = 3
 client_last_used = {}
-client_creation_time = {}  # 新增：追踪客户端创建时间
+client_creation_time = {}  # 追踪客户端创建时间
 CLIENT_IDLE_TIMEOUT = 900  # 15 minutes
 CLIENT_MAX_LIFETIME = 1800  # 30 minutes maximum lifetime
 CLIENT_HEALTH_CHECK_INTERVAL = 60  # 1 minute health check
 CLIENT_COOKIE_REFRESH_THRESHOLD = 540  # 9 minutes - cookie refresh threshold
 
-# Cookie cache management - 新增
+# Cookie cache management
 cookie_cache = {}
 cookie_cache_file = Path("./temp/.cached_cookies.json")
 cookie_cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +54,7 @@ CLIENT_CONFIG = {
 # Background task for client health monitoring
 health_monitor_task = None
 
-# 新增：Cookie缓存管理函数
+# Cookie缓存管理函数
 async def load_cookie_cache():
     """Load cookie cache from file"""
     global cookie_cache
@@ -94,7 +95,7 @@ def cache_cookies(secure_1psid: str, cookies: dict):
     # 异步保存，不阻塞主流程
     asyncio.create_task(save_cookie_cache())
 
-# 新增：浏览器Cookie加载支持
+# 浏览器Cookie加载支持
 def load_browser_cookies_fallback() -> dict:
     """Try to load cookies from browser as fallback"""
     try:
@@ -132,6 +133,18 @@ def load_browser_cookies_fallback() -> dict:
         print(f"⚠️ Error loading browser cookies: {str(e)}")
         return {}
 
+# 简化的Cookie刷新函数 - 移除不存在的rotate_1psidts函数
+async def rotate_1psidts(cookies: dict, proxy: str = None) -> Optional[str]:
+    """Simple 1PSIDTS refresh - placeholder implementation"""
+    try:
+        # 这里应该实现实际的1PSIDTS刷新逻辑
+        # 目前返回None，表示刷新失败
+        print("⚠️ rotate_1psidts not implemented, client will be recreated instead")
+        return None
+    except Exception as e:
+        print(f"⚠️ Error in rotate_1psidts: {str(e)}")
+        return None
+
 async def monitor_client_health():
     """Background task to monitor and cleanup unhealthy clients"""
     while True:
@@ -153,7 +166,7 @@ async def monitor_client_health():
                     clients_to_remove.append(client_id)
                     print(f"🧹 Scheduling client {client_id} for cleanup")
                 
-                # Check if cookies need refresh - 新增逻辑
+                # Check if cookies need refresh
                 elif (current_time - creation_time > CLIENT_COOKIE_REFRESH_THRESHOLD and 
                       client_id not in cookies_to_refresh):
                     cookies_to_refresh.append(client_id)
@@ -162,7 +175,7 @@ async def monitor_client_health():
             for client_id in clients_to_remove:
                 await cleanup_client(client_id)
             
-            # Refresh cookies for clients that need it - 新增
+            # Refresh cookies for clients that need it
             for client_id in cookies_to_refresh:
                 await refresh_client_cookies(client_id)
             
@@ -173,7 +186,7 @@ async def monitor_client_health():
             print(f"❌ Error in client health monitor: {str(e)}")
             await asyncio.sleep(CLIENT_HEALTH_CHECK_INTERVAL)
 
-# 新增：Cookie刷新函数
+# Cookie刷新函数
 async def refresh_client_cookies(client_id: str):
     """Refresh cookies for a specific client"""
     if client_id not in gemini_clients:
@@ -183,8 +196,6 @@ async def refresh_client_cookies(client_id: str):
         client = gemini_clients[client_id]
         if hasattr(client, 'cookies') and client.cookies.get("__Secure-1PSID"):
             # 尝试刷新SECURE_1PSIDTS
-            # from gemini_webapi.utils import rotate_1psidts
-            
             new_1psidts = await rotate_1psidts(client.cookies, GEMINI_PROXY)
             if new_1psidts:
                 client.cookies["__Secure-1PSIDTS"] = new_1psidts
@@ -193,6 +204,9 @@ async def refresh_client_cookies(client_id: str):
                 
                 # 重置创建时间
                 client_creation_time[client_id] = time.time()
+            else:
+                # Cookie刷新失败，标记客户端需要重建
+                await cleanup_client(client_id)
             
     except Exception as e:
         print(f"⚠️ Failed to refresh cookies for client {client_id}: {str(e)}")
@@ -208,7 +222,7 @@ async def cleanup_client(client_id: str):
             del gemini_clients[client_id]
             if client_id in client_last_used:
                 del client_last_used[client_id]
-            if client_id in client_creation_time:  # 新增
+            if client_id in client_creation_time:
                 del client_creation_time[client_id]
             print(f"🗑️ Client {client_id} cleaned up successfully")
         except Exception as e:
@@ -220,7 +234,7 @@ async def startup():
     
     print("🚀 Starting Enhanced Gemini API FastAPI Server v0.4.0")
     
-    # Load cookie cache - 新增
+    # Load cookie cache
     await load_cookie_cache()
     
     # Validate credentials with enhanced logic
@@ -258,7 +272,7 @@ async def startup():
 async def shutdown():
     global health_monitor_task
     
-    # Save cookie cache before shutdown - 新增
+    # Save cookie cache before shutdown
     await save_cookie_cache()
     
     # Cancel health monitor
@@ -587,7 +601,7 @@ async def create_new_client(client_id: str) -> GeminiClient:
         
         gemini_clients[client_id] = client
         client_last_used[client_id] = time.time()
-        client_creation_time[client_id] = time.time()  # 新增
+        client_creation_time[client_id] = time.time()
         
         print(f"✅ New client {client_id} created and initialized successfully")
         return client
@@ -606,119 +620,120 @@ async def create_new_client(client_id: str) -> GeminiClient:
         )
 
 # Enhanced chat completions endpoint with better error handling and retry logic
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     temp_files = []
     client = None
     max_retries = 3
-   
-   try:
-       # 准备对话内容
-       conversation, temp_files = prepare_conversation(request.messages)
-       model = map_openai_to_gemini_model(request.model)
-       
-       print(f"📝 Prepared conversation: {conversation[:200]}...")
-       
-       # 重试逻辑 - 使用不同的客户端进行重试
-       for attempt in range(max_retries):
-           try:
-               client = await get_gemini_client()
-               print(f"🚀 Sending request to Gemini (attempt {attempt + 1})")
-               
-               # 生成响应
-               if temp_files:
-                   response = await client.generate_content(
-                       prompt=conversation, 
-                       files=temp_files,
-                       model=model
-                   )
-               else:
-                   response = await client.generate_content(conversation, model=model)
-               
-               # 成功获取响应，跳出重试循环
-               break
-               
-           except Exception as e:
-               print(f"❌ Attempt {attempt + 1} failed: {str(e)}")
-               
-               # 如果是认证错误或者是最后一次尝试，直接抛出异常
-               if isinstance(e, AuthError) or attempt == max_retries - 1:
-                   raise e
-               
-               # 清理有问题的客户端
-               if client:
-                   for client_id, stored_client in list(gemini_clients.items()):
-                       if stored_client is client:
-                           await cleanup_client(client_id)
-                           break
-               
-               # 短暂延迟后重试，使用指数退避
-               await asyncio.sleep(min(2 ** attempt, 5))  # 指数退避，最大5秒
-       
-       # 处理响应内容
-       reply_text = response.text if response and response.text else ""
-       
-       # 字符转义处理和markdown修正
-       if not reply_text.strip():
-           reply_text = "Empty response received from Gemini. Please try again."
-       
-       # 流式响应处理
-       if request.stream:
-           async def generate_stream():
-               # 流式输出文本
-               for char in reply_text:
-                   chunk = {
-                       "id": f"chatcmpl-{int(time.time())}",
-                       "object": "chat.completion.chunk",
-                       "created": int(time.time()),
-                       "model": request.model,
-                       "choices": [{
-                           "index": 0,
-                           "delta": {"content": char},
-                           "finish_reason": None
-                       }]
-                   }
-                   yield f"data: {json.dumps(chunk).decode()}\n\n"
-                   await asyncio.sleep(0.01)  # 控制输出速度
-               
-               # 结束标记
-               final_chunk = {
-                   "id": f"chatcmpl-{int(time.time())}",
-                   "object": "chat.completion.chunk", 
-                   "created": int(time.time()),
-                   "model": request.model,
-                   "choices": [{
-                       "index": 0,
-                       "delta": {},
-                       "finish_reason": "stop"
-                   }]
-               }
-               yield f"data: {json.dumps(final_chunk).decode()}\n\n"
-               yield "data: [DONE]\n\n"
-           
-           return StreamingResponse(generate_stream(), media_type="text/plain")
-       else:
-           # 非流式响应
-           return ChatResponse(
-               id=f"chatcmpl-{int(time.time())}",
-               created=int(time.time()),
-               model=request.model,
-               choices=[{
-                   "index": 0,
-                   "message": {
-                       "role": "assistant",
-                       "content": reply_text
-                   },
-                   "finish_reason": "stop"
-               }]
-           )
-   
-   except Exception as e:
-       print(f"❌ Error generating completion: {str(e)}", exc_info=True)
-       raise
-   finally:
-       # 清理临时文件
-       await cleanup_temp_files(temp_files)
+    
+    try:
+        # 准备对话内容
+        conversation, temp_files = prepare_conversation(request.messages)
+        model = map_openai_to_gemini_model(request.model)
+        
+        print(f"📝 Prepared conversation: {conversation[:200]}...")
+        
+        # 重试逻辑 - 使用不同的客户端进行重试
+        for attempt in range(max_retries):
+            try:
+                client = await get_gemini_client()
+                print(f"🚀 Sending request to Gemini (attempt {attempt + 1})")
+                
+                # 生成响应
+                if temp_files:
+                    response = await client.generate_content(
+                        prompt=conversation, 
+                        files=temp_files,
+                        model=model
+                    )
+                else:
+                    response = await client.generate_content(conversation, model=model)
+                
+                # 成功获取响应，跳出重试循环
+                break
+                
+            except Exception as e:
+                print(f"❌ Attempt {attempt + 1} failed: {str(e)}")
+                
+                # 如果是认证错误或者是最后一次尝试，直接抛出异常
+                if isinstance(e, AuthError) or attempt == max_retries - 1:
+                    raise e
+                
+                # 清理有问题的客户端
+                if client:
+                    for client_id, stored_client in list(gemini_clients.items()):
+                        if stored_client is client:
+                            await cleanup_client(client_id)
+                            break
+                
+                # 短暂延迟后重试，使用指数退避
+                await asyncio.sleep(min(2 ** attempt, 5))  # 指数退避，最大5秒
+        
+        # 处理响应内容
+        reply_text = response.text if response and response.text else ""
+        
+        # 字符转义处理和markdown修正
+        if not reply_text.strip():
+            reply_text = "Empty response received from Gemini. Please try again."
+        
+        # 流式响应处理
+        if request.stream:
+            async def generate_stream():
+                # 流式输出文本
+                for char in reply_text:
+                    chunk = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": char},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk).decode()}\n\n"
+                    await asyncio.sleep(0.01)  # 控制输出速度
+                
+                # 结束标记
+                final_chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk", 
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(final_chunk).decode()}\n\n"
+                yield "data: [DONE]\n\n"
+            
+            return StreamingResponse(generate_stream(), media_type="text/plain")
+        else:
+            # 非流式响应
+            return ChatResponse(
+                id=f"chatcmpl-{int(time.time())}",
+                created=int(time.time()),
+                model=request.model,
+                choices=[{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": reply_text
+                    },
+                    "finish_reason": "stop"
+                }]
+            )
+    
+    except Exception as e:
+        print(f"❌ Error generating completion: {str(e)}", exc_info=True)
+        raise
+    finally:
+        # 清理临时文件
+        await cleanup_temp_files(temp_files)
 
 async def cleanup_temp_files(temp_files: List[str]):
     """Clean up temporary files safely"""
@@ -744,5 +759,5 @@ async def cleanup_temp_files(temp_files: List[str]):
         print(f"⚠️ Failed to clean up {len(failed_cleanups)} temporary files")
 
 if __name__ == "__main__":
-   import uvicorn
-   uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info")
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info")
