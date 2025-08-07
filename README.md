@@ -49,7 +49,7 @@ API_KEY= "API_KEY VALUE HERE"
 
 1. 克隆本项目
    ```bash
-   git clone https://github.com/zhiyu1998/Gemi2Api-Server.git
+   git clone https://github.com/swhesong/Gemi2Api-Server.git
    ```
 
 2. 创建 `.env` 文件并填入你的 Gemini Cookie 凭据:
