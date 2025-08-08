@@ -7,16 +7,14 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - ./temp:/app/temp
       - ./cache:/app/.venv/lib/python3.12/site-packages/gemini_webapi/utils/temp
     env_file:
       - .env
     environment:
-      - CONFIG_SERVER__HOST=0.0.0.0
-      - CONFIG_SERVER__PORT=8000
-      - CONFIG_SERVER__API_KEY=${API_KEY}
-      - CONFIG_GEMINI__CLIENTS__0__ID=default-client
-      - CONFIG_GEMINI__CLIENTS__0__SECURE_1PSID=${SECURE_1PSID}
-      - CONFIG_GEMINI__CLIENTS__0__SECURE_1PSIDTS=${SECURE_1PSIDTS}
+      - SECURE_1PSID=${SECURE_1PSID}
+      - SECURE_1PSIDTS=${SECURE_1PSIDTS}
+      - API_KEY=${API_KEY}
       - GEMINI_PROXY=${GEMINI_PROXY}
       - LOG_LEVEL=info
       - TZ=Asia/Shanghai
@@ -31,8 +29,8 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+        
   watchtower:
-    # watchtower 服务部分保持不变
     image: containrrr/watchtower
     restart: always
     volumes:
