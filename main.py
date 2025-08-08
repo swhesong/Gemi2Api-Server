@@ -4,13 +4,14 @@ import os
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from pathlib import Path
 import re
 
 import json
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -18,6 +19,14 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError, UsageLimitExceeded, ModelInvalid, TemporarilyBlocked
 import httpx
+
+
+try:
+    import browser_cookie3 as bc3
+    HAS_BROWSER_COOKIE3 = True
+except ImportError:
+    HAS_BROWSER_COOKIE3 = False
+    bc3 = None
 
 # Environment variables
 SECURE_1PSID = os.getenv("SECURE_1PSID")
@@ -44,6 +53,42 @@ CLIENT_MAX_LIFETIME = 1800  # 30 minutes maximum lifetime
 CLIENT_HEALTH_CHECK_INTERVAL = 60  # 1 minute health check
 CLIENT_COOKIE_REFRESH_THRESHOLD = 540  # 9 minutes - cookie refresh threshold
 
+model_cache = {}
+model_cache_timestamp = 0
+MODEL_CACHE_TTL = 300  # 5 minutes cache TTL
+
+def get_cached_models() -> Dict[str, Model]:
+    """获取缓存的模型列表，减少重复查询"""
+    global model_cache, model_cache_timestamp
+    current_time = time.time()
+    
+    # 检查缓存是否有效
+    if model_cache and (current_time - model_cache_timestamp < MODEL_CACHE_TTL):
+        return model_cache
+    
+    # 重新构建缓存
+    try:
+        models = {}
+        # 使用更高效的枚举方式
+        for m in Model:
+            try:
+                model_name = getattr(m, "model_name", str(m))
+                models[model_name] = m
+            except AttributeError:
+                # 处理某些模型可能没有model_name属性的情况
+                models[str(m)] = m
+        
+        # 原子更新缓存
+        model_cache = models
+        model_cache_timestamp = current_time
+        print(f"🔄 Refreshed model cache with {len(models)} models")
+        return models
+        
+    except Exception as e:
+        print(f"⚠️ Failed to refresh model cache: {str(e)}")
+        # 返回旧缓存或空字典
+        return model_cache if model_cache else {}
+        
 # Cookie cache management
 cookie_cache = {}
 cookie_cache_file = Path("./temp/.cached_cookies.json")
@@ -61,16 +106,38 @@ CLIENT_CONFIG = {
 
 # Background task for client health monitoring
 health_monitor_task = None
+# Enhanced client management with connection pooling and health monitoring  
+# 添加客户端池锁
+cache_lock = None
+client_pool_lock = None  # 将在startup事件中初始化
 
+async def init_locks():
+    """Initialize async locks"""
+    global cache_lock, client_pool_lock
+    cache_lock = asyncio.Lock()
+    client_pool_lock = asyncio.Lock()
 # Cookie缓存管理函数
 async def load_cookie_cache():
     """Load cookie cache from file"""
     global cookie_cache
     try:
-        if cookie_cache_file.exists():
-            with open(cookie_cache_file, 'r') as f:
-                cookie_cache = json.loads(f.read())
-            print(f"📦 Loaded cookie cache with {len(cookie_cache)} entries")
+        if cache_lock is None:
+            # 如果锁还未初始化，直接加载而不使用锁
+            if cookie_cache_file.exists():
+                with open(cookie_cache_file, 'r') as f:
+                    cookie_cache = json.loads(f.read())
+                print(f"📦 Loaded cookie cache with {len(cookie_cache)} entries")
+            else:
+                print("📦 No existing cookie cache file found")
+        else:
+            # 使用锁保护
+            async with cache_lock:
+                if cookie_cache_file.exists():
+                    with open(cookie_cache_file, 'r') as f:
+                        cookie_cache = json.loads(f.read())
+                    print(f"📦 Loaded cookie cache with {len(cookie_cache)} entries")
+                else:
+                    print("📦 No existing cookie cache file found")
     except Exception as e:
         print(f"⚠️ Failed to load cookie cache: {str(e)}")
         cookie_cache = {}
@@ -78,9 +145,17 @@ async def load_cookie_cache():
 async def save_cookie_cache():
     """Save cookie cache to file"""
     try:
-        with open(cookie_cache_file, 'w') as f:
-            f.write(json.dumps(cookie_cache))
-        print(f"💾 Saved cookie cache with {len(cookie_cache)} entries")
+        if cache_lock is None:
+            # 如果锁还未初始化，直接保存而不使用锁
+            with open(cookie_cache_file, 'w') as f:
+                f.write(json.dumps(cookie_cache))
+            print(f"💾 Saved cookie cache with {len(cookie_cache)} entries")
+        else:
+            # 使用锁保护
+            async with cache_lock:
+                with open(cookie_cache_file, 'w') as f:
+                    f.write(json.dumps(cookie_cache))
+                print(f"💾 Saved cookie cache with {len(cookie_cache)} entries")
     except Exception as e:
         print(f"⚠️ Failed to save cookie cache: {str(e)}")
 
@@ -93,15 +168,40 @@ def get_cached_cookies(secure_1psid: str) -> dict:
         return cached_data.get("cookies", {})
     return {}
 
-def cache_cookies(secure_1psid: str, cookies: dict):
-    """Cache cookies for a given SECURE_1PSID"""
+async def cache_cookies_async(secure_1psid: str, cookies: dict):
+    """Cache cookies for a given SECURE_1PSID with proper async handling"""
     cache_key = f"cookies_{secure_1psid[:10]}"
-    cookie_cache[cache_key] = {
-        "cookies": cookies,
-        "timestamp": time.time()
-    }
-    # 异步保存，不阻塞主流程
-    asyncio.create_task(save_cookie_cache())
+    
+    if cache_lock is not None:
+        async with cache_lock:
+            cookie_cache[cache_key] = {
+                "cookies": cookies,
+                "timestamp": time.time()
+            }
+        # 异步保存
+        await save_cookie_cache()
+    else:
+        # 锁未初始化时的处理
+        cookie_cache[cache_key] = {
+            "cookies": cookies,
+            "timestamp": time.time()
+        }
+        # 尝试保存但不等待
+        try:
+            await save_cookie_cache()
+        except Exception as e:
+            print(f"⚠️ Failed to save cookie cache without lock: {str(e)}")
+
+def cache_cookies(secure_1psid: str, cookies: dict):
+    """Synchronous wrapper for cache_cookies_async"""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(cache_cookies_async(secure_1psid, cookies))
+        else:
+            loop.run_until_complete(cache_cookies_async(secure_1psid, cookies))
+    except Exception as e:
+        print(f"⚠️ Failed to cache cookies: {str(e)}")
 
 # 浏览器Cookie加载支持
 def load_browser_cookies_fallback() -> dict:
@@ -116,30 +216,29 @@ def load_browser_cookies_fallback() -> dict:
         return {}
     except ImportError:
         # 如果gemini_webapi不可用，回退到browser_cookie3
-        try:
-            import browser_cookie3 as bc3
-            
-            cookies = {}
-            browsers = [bc3.chrome, bc3.chromium, bc3.opera, bc3.brave, bc3.edge, bc3.firefox]
-            
-            for browser_fn in browsers:
-                try:
-                    for cookie in browser_fn(domain_name="google.com"):
-                        if cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS", "NID"]:
-                            cookies[cookie.name] = cookie.value
-                    if cookies.get("__Secure-1PSID"):
-                        print(f"🌐 Loaded cookies from {browser_fn.__name__}")
-                        return cookies
-                except Exception:
-                    continue
-                    
-            return cookies
-        except ImportError:
-            print("📦 Neither gemini_webapi.utils nor browser_cookie3 available, skipping browser cookie loading")
+        if HAS_BROWSER_COOKIE3 and bc3 is not None:
+            try:
+                cookies = {}
+                browsers = [bc3.chrome, bc3.chromium, bc3.opera, bc3.brave, bc3.edge, bc3.firefox]
+                
+                for browser_fn in browsers:
+                    try:
+                        for cookie in browser_fn(domain_name="google.com"):
+                            if cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS", "NID"]:
+                                cookies[cookie.name] = cookie.value
+                        if cookies.get("__Secure-1PSID"):
+                            print(f"🌐 Loaded cookies from {browser_fn.__name__}")
+                            return cookies
+                    except Exception:
+                        continue
+                        
+                return cookies
+            except Exception as e:
+                print(f"⚠️ Error loading browser cookies: {str(e)}")
+                return {}
+        else:
+            print("📦 browser_cookie3 not available, skipping browser cookie loading")
             return {}
-    except Exception as e:
-        print(f"⚠️ Error loading browser cookies: {str(e)}")
-        return {}
 def correct_markdown(md_text: str) -> str:
     """
     修正Markdown文本，移除Google搜索链接包装器，并根据显示文本简化目标URL。
@@ -171,14 +270,33 @@ def correct_markdown(md_text: str) -> str:
 
 # 简化的Cookie刷新函数 - 移除不存在的rotate_1psidts函数
 async def rotate_1psidts(cookies: dict, proxy: str = None) -> Optional[str]:
-    """Simple 1PSIDTS refresh - placeholder implementation"""
+    """Refresh 1PSIDTS token by making a request to Google"""
     try:
-        # 这里应该实现实际的1PSIDTS刷新逻辑
-        # 目前返回None，表示刷新失败
-        print("⚠️ rotate_1psidts not implemented, client will be recreated instead")
+        if not cookies.get("__Secure-1PSID"):
+            print("⚠️ No __Secure-1PSID found in cookies")
+            return None
+            
+        # 构建刷新请求
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://gemini.google.com/",
+            "Cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()])
+        }
+        
+        async with httpx.AsyncClient(proxy=proxy, timeout=10) as client:
+            response = await client.get("https://gemini.google.com/", headers=headers)
+            
+            # 从响应中提取新的1PSIDTS
+            for cookie in response.cookies:
+                if cookie.name == "__Secure-1PSIDTS":
+                    print("✅ Successfully refreshed __Secure-1PSIDTS")
+                    return cookie.value
+                    
+        print("⚠️ Failed to find new __Secure-1PSIDTS in response")
         return None
+        
     except Exception as e:
-        print(f"⚠️ Error in rotate_1psidts: {str(e)}")
+        print(f"⚠️ Error refreshing 1PSIDTS: {str(e)}")
         return None
 
 async def monitor_client_health():
@@ -188,8 +306,24 @@ async def monitor_client_health():
             current_time = time.time()
             clients_to_remove = []
             cookies_to_refresh = []
+
+            # 获取客户端快照，使用异步锁保护
+            if client_pool_lock is None:
+                await asyncio.sleep(CLIENT_HEALTH_CHECK_INTERVAL)
+                continue
+                
+            async with client_pool_lock:
+                clients_snapshot = dict(gemini_clients)
             
-            for client_id, client in gemini_clients.items():
+            for client_id, client in clients_snapshot.items():
+                # 再次检查客户端是否仍在池中
+                async with client_pool_lock:
+                    if client_id not in gemini_clients:
+                        continue
+                    current_client = gemini_clients[client_id]
+                    if current_client != client:
+                        continue  # 客户端已被替换
+
                 last_used = client_last_used.get(client_id, current_time)
                 creation_time = client_creation_time.get(client_id, current_time)
                 
@@ -213,7 +347,8 @@ async def monitor_client_health():
             
             # Refresh cookies for clients that need it
             for client_id in cookies_to_refresh:
-                await refresh_client_cookies(client_id)
+                if client_id in gemini_clients:  # 再次检查客户端是否存在
+                    await refresh_client_cookies(client_id)
             
             # Sleep for the next health check
             await asyncio.sleep(CLIENT_HEALTH_CHECK_INTERVAL)
@@ -225,11 +360,15 @@ async def monitor_client_health():
 # Cookie刷新函数
 async def refresh_client_cookies(client_id: str):
     """Refresh cookies for a specific client"""
-    if client_id not in gemini_clients:
+    if client_pool_lock is None:
         return
+        
+    async with client_pool_lock:
+        if client_id not in gemini_clients:
+            return
+        client = gemini_clients[client_id]
     
     try:
-        client = gemini_clients[client_id]
         if hasattr(client, 'cookies') and client.cookies.get("__Secure-1PSID"):
             # 尝试刷新SECURE_1PSIDTS
             new_1psidts = await rotate_1psidts(client.cookies, GEMINI_PROXY)
@@ -241,8 +380,8 @@ async def refresh_client_cookies(client_id: str):
                 # 重置创建时间
                 client_creation_time[client_id] = time.time()
             else:
-                # Cookie刷新失败，标记客户端需要重建
-                await cleanup_client(client_id)
+                # Cookie刷新失败，仅记录警告，不立即删除客户端
+                print(f"⚠️ Cookie refresh failed for client {client_id}, will be recreated on next health check")
             
     except Exception as e:
         print(f"⚠️ Failed to refresh cookies for client {client_id}: {str(e)}")
@@ -251,25 +390,50 @@ async def refresh_client_cookies(client_id: str):
 
 async def cleanup_client(client_id: str):
     """Safely cleanup a specific client"""
-    if client_id in gemini_clients:
+    if client_pool_lock is None:
+        return
+        
+    client = None
+    
+    async with client_pool_lock:
+        if client_id not in gemini_clients:
+            return
+            
         try:
             client = gemini_clients[client_id]
-            await client.close()
+            
+            # 先从字典中移除，避免并发访问
             del gemini_clients[client_id]
-            if client_id in client_last_used:
-                del client_last_used[client_id]
-            if client_id in client_creation_time:
-                del client_creation_time[client_id]
-            print(f"🗑️ Client {client_id} cleaned up successfully")
+            
+            # 清理相关的时间戳记录
+            client_last_used.pop(client_id, None)
+            client_creation_time.pop(client_id, None)
+            
+            print(f"🗑️ Client {client_id} removed from pool")
+            
         except Exception as e:
-            print(f"⚠️ Error cleaning up client {client_id}: {str(e)}")
+            print(f"⚠️ Error removing client {client_id} from pool: {str(e)}")
+            # 确保即使出错，客户端也从池中移除
+            gemini_clients.pop(client_id, None)
+            client_last_used.pop(client_id, None)
+            client_creation_time.pop(client_id, None)
+    
+    # 在锁外关闭客户端，避免死锁
+    if client and hasattr(client, 'close'):
+        try:
+            await client.close()
+            print(f"✅ Client {client_id} closed successfully")
+        except Exception as e:
+            print(f"⚠️ Error closing client {client_id}: {str(e)}")
+
 
 @app.on_event("startup")
 async def startup():
     global health_monitor_task
     
     print("🚀 Starting Enhanced Gemini API FastAPI Server v0.4.0")
-    
+    # 初始化异步锁
+    await init_locks()
     # Load cookie cache
     await load_cookie_cache()
     
@@ -362,7 +526,7 @@ def verify_api_key(api_key: str = None):
 
 # Enhanced error handler middleware with better error classification
 @app.middleware("http")
-async def error_handler_middleware(request, call_next):
+async def error_handler_middleware(request: Request, call_next) -> Response:
     try:
         response = await call_next(request)
         return response
@@ -457,37 +621,79 @@ async def root():
         ],
     }
 
-# Get list of available models
+# Get list of available models - Enhanced with dynamic model discovery
 @app.get("/v1/models")
 async def list_models():
+    """返回动态获取的gemini_webapi中声明的模型列表，同时保留OpenAI兼容性"""
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    
+    # 动态获取所有Gemini模型
+    gemini_models = []
+    try:
+        for m in Model:
+            model_name = m.model_name if hasattr(m, "model_name") else str(m)
+            gemini_models.append({
+                "id": model_name,
+                "object": "model",
+                "created": now,
+                "owned_by": "google-gemini-web",
+            })
+    except Exception as e:
+        print(f"⚠️ Failed to get dynamic models, using fallback: {str(e)}")
+    
+    # OpenAI兼容性模型（保持原有功能）
+    openai_compatible_models = [
+        {"id": "gpt-4", "object": "model", "created": now, "owned_by": "google-gemini"},
+        {"id": "gpt-4-turbo", "object": "model", "created": now, "owned_by": "google-gemini"}, 
+        {"id": "gpt-3.5-turbo", "object": "model", "created": now, "owned_by": "google-gemini"},
+    ]
+    
+    # 合并所有模型，去重
+    all_models = openai_compatible_models + gemini_models
+    
+    # 去重处理（基于id）
+    seen_ids = set()
+    unique_models = []
+    for model in all_models:
+        if model["id"] not in seen_ids:
+            seen_ids.add(model["id"])
+            unique_models.append(model)
+    
     return {
         "object": "list",
-        "data": [
-            {"id": "gpt-4", "object": "model", "created": 0, "owned_by": "google-gemini"},
-            {"id": "gpt-4-turbo", "object": "model", "created": 0, "owned_by": "google-gemini"}, 
-            {"id": "gpt-3.5-turbo", "object": "model", "created": 0, "owned_by": "google-gemini"},
-            {"id": "gemini-2.5-flash", "object": "model", "created": 0, "owned_by": "google-gemini"},
-            {"id": "gemini-2.5-pro", "object": "model", "created": 0, "owned_by": "google-gemini"},
-        ]
+        "data": unique_models
     }
 
 # Enhanced model mapping with better error handling and fixed mappings
 def map_openai_to_gemini_model(openai_model_name: str) -> Model:
-    """Map OpenAI model names to Gemini models with improved logic"""
+    """Map OpenAI model names to Gemini models with improved logic and dynamic model support"""
     
-    # Direct model name mappings (most reliable)
-    direct_mappings = {
+    # 动态构建直接映射表（项目Z的优势功能）
+    direct_mappings = {}
+    try:
+        for m in Model:
+            model_name = m.model_name if hasattr(m, "model_name") else str(m)
+            direct_mappings[model_name] = m
+    except Exception as e:
+        print(f"⚠️ Failed to build dynamic mappings: {str(e)}")
+    
+    # 静态映射作为备份（保持原有功能）
+    static_direct_mappings = {
         "gemini-2.5-pro": Model.G_2_5_PRO,
         "gemini-2.5-flash": Model.G_2_5_FLASH,
         "gemini-2.0-flash": Model.G_2_0_FLASH,
         "gemini-2.0-flash-thinking": Model.G_2_0_FLASH_THINKING,
     }
     
-    # Check direct mappings first
-    if openai_model_name in direct_mappings:
-        return direct_mappings[openai_model_name]
+    # 合并动态和静态映射
+    combined_direct_mappings = {**static_direct_mappings, **direct_mappings}
     
-    # OpenAI to Gemini model mappings for compatibility
+    # Check direct mappings first (现在支持动态模型如gemini-2.5-advanced)
+    if openai_model_name in combined_direct_mappings:
+        print(f"✅ Found direct model mapping for '{openai_model_name}'")
+        return combined_direct_mappings[openai_model_name]
+    
+    # OpenAI to Gemini model mappings for compatibility（保持原有功能）
     openai_mappings = {
         "gpt-4": Model.G_2_5_PRO,           # Map GPT-4 to most capable Gemini model
         "gpt-4-turbo": Model.G_2_5_PRO,     # Map GPT-4 Turbo to Gemini 2.5 Pro  
@@ -500,9 +706,37 @@ def map_openai_to_gemini_model(openai_model_name: str) -> Model:
     if openai_model_name in openai_mappings:
         return openai_mappings[openai_model_name]
     
-    # Fallback: partial matching for flexibility
+    # 增强的动态关键词匹配（项目Z的功能 + 原有逻辑）
     model_name_lower = openai_model_name.lower()
     
+    # 尝试在所有可用模型中进行智能匹配
+    best_match = None
+    try:
+        for m in Model:
+            model_name = (m.model_name if hasattr(m, "model_name") else str(m)).lower()
+            
+            # 精确关键词匹配
+            if "advanced" in model_name_lower and "advanced" in model_name:
+                best_match = m
+                print(f"✅ Found advanced model match: {model_name}")
+                break
+            elif "pro" in model_name_lower and "pro" in model_name:
+                best_match = m
+            elif "flash" in model_name_lower and "flash" in model_name:
+                if best_match is None:  # 只在没找到更好匹配时使用flash
+                    best_match = m
+            elif "thinking" in model_name_lower and "thinking" in model_name:
+                best_match = m
+                break  # thinking模型优先级高
+        
+        if best_match:
+            print(f"✅ Found dynamic model match for '{openai_model_name}': {best_match}")
+            return best_match
+            
+    except Exception as e:
+        print(f"⚠️ Dynamic model matching failed: {str(e)}")
+    
+    # 原有的静态回退逻辑（保持原有功能）
     if "pro" in model_name_lower or "gpt-4" in model_name_lower:
         return Model.G_2_5_PRO
     elif "flash" in model_name_lower or "gpt-3.5" in model_name_lower or "turbo" in model_name_lower:
@@ -516,10 +750,29 @@ def map_openai_to_gemini_model(openai_model_name: str) -> Model:
 
 # Enhanced file processing with better security and error handling
 def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
+    if not messages:
+        raise ValueError("Messages cannot be empty")
+    
+    if len(messages) > 100:  # 限制消息数量
+        raise ValueError("Too many messages (max 100)")
+    
     conversation_parts = []
     temp_files = []
     
-    for message in messages:
+    for i, message in enumerate(messages):
+        # 更严格的消息验证
+        if not isinstance(message, Message):
+            print(f"⚠️ Skipping invalid message at index {i}: not a Message instance")
+            continue
+            
+        if not hasattr(message, 'role') or not hasattr(message, 'content'):
+            print(f"⚠️ Skipping invalid message at index {i}: missing role or content")
+            continue
+            
+        if message.role not in ["user", "assistant", "system"]:
+            print(f"⚠️ Skipping message at index {i}: invalid role '{message.role}'")
+            continue
+            
         if message.role in ["user", "assistant"]:
             if isinstance(message.content, str):
                 conversation_parts.append(message.content)
@@ -545,20 +798,24 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
                                 if len(image_data) > 10 * 1024 * 1024:
                                     print("⚠️ Image too large (>10MB), skipping")
                                     continue
-                                
+                                # Validate minimum image size  
+                                if len(image_data) < 100:
+                                    print("⚠️ Image too small, likely invalid, skipping")
+                                    continue
                                 # Extract image format from header
                                 image_format = re.search(r"image/(\w+)", header)
                                 suffix = f".{image_format.group(1)}" if image_format else ".png"
-                                
+
                                 # Create temporary file with proper extension
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="gemini_img_") as temp_file:
                                     temp_file.write(image_data)
+                                    temp_file.flush()  # 确保数据写入磁盘
                                     temp_files.append(temp_file.name)
                                     print(f"📷 Processed image: {len(image_data)} bytes -> {temp_file.name}")
-                                    
                             except Exception as e:
                                 print(f"⚠️ Failed to process image: {str(e)}")
-                
+                                continue
+
                 if text_parts:
                     conversation_parts.append(" ".join(text_parts))
     
@@ -566,36 +823,36 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
     conversation = "\n".join(conversation_parts)
     return conversation, temp_files
 
-# Enhanced client management with connection pooling and health monitoring  
 async def get_gemini_client() -> GeminiClient:
     """Get a healthy client from the pool or create a new one"""
-    current_time = time.time()
-    
-    # Find a healthy client
-    for client_id, client in gemini_clients.items():
-        if (hasattr(client, 'running') and client.running and 
-            client_last_used.get(client_id, 0) + CLIENT_MAX_LIFETIME > current_time and
-            client_creation_time.get(client_id, 0) + CLIENT_MAX_LIFETIME > current_time):
-            
-            client_last_used[client_id] = current_time
-            print(f"♻️ Reusing healthy client {client_id}")
+    async with client_pool_lock:
+        current_time = time.time()
+        
+        # Find a healthy client
+        for client_id, client in gemini_clients.items():
+            if (hasattr(client, 'running') and client.running and 
+                client_last_used.get(client_id, 0) + CLIENT_MAX_LIFETIME > current_time and
+                client_creation_time.get(client_id, 0) + CLIENT_MAX_LIFETIME > current_time):
+                
+                client_last_used[client_id] = current_time
+                print(f"♻️ Reusing healthy client {client_id}")
+                return client
+
+        # Create new client if pool is not full
+        if len(gemini_clients) < client_pool_size:
+            client_id = f"client_{int(current_time)}_{len(gemini_clients)}"
+            client = await create_new_client(client_id)
             return client
-    
-    # Create new client if pool is not full
-    if len(gemini_clients) < client_pool_size:
-        client_id = f"client_{int(current_time)}_{len(gemini_clients)}"
+        
+        # If pool is full, replace the oldest client
+        oldest_client_id = min(client_last_used.keys(), key=client_last_used.get, default=None)
+        if oldest_client_id:
+            await cleanup_client(oldest_client_id)
+        
+        # Create new client
+        client_id = f"client_{int(current_time)}"
         client = await create_new_client(client_id)
         return client
-    
-    # If pool is full, replace the oldest client
-    oldest_client_id = min(client_last_used.keys(), key=client_last_used.get, default=None)
-    if oldest_client_id:
-        await cleanup_client(oldest_client_id)
-    
-    # Create new client
-    client_id = f"client_{int(current_time)}"
-    client = await create_new_client(client_id)
-    return client
 
 async def create_new_client(client_id: str) -> GeminiClient:
     """Create a new Gemini client with enhanced configuration and better cookie handling"""
