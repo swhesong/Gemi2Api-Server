@@ -49,7 +49,7 @@
 
 **Render**
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/zhiyu1998/Gemi2Api-Server)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/swhesong/Gemi2Api-Server)
 
 </td>
 <td align="center">
@@ -472,7 +472,7 @@ docker-compose logs | grep ERROR
 感谢所有为 `Gemi2Api-Server` 作出贡献的开发者：
 
 <a href="https://github.com/zhiyu1998/Gemi2Api-Server/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=zhiyu1998/Gemi2Api-Server&max=1000" />
+  <img src="https://contrib.rocks/image?repo=swhesong/Gemi2Api-Server&max=1000" />
 </a>
 
 ---
@@ -496,8 +496,8 @@ docker-compose logs | grep ERROR
 
 **⭐ 如果这个项目对你有帮助，请给我们一个星标！**
 
-[![GitHub stars](https://img.shields.io/github/stars/zhiyu1998/Gemi2Api-Server.svg?style=social&label=Star)](https://github.com/zhiyu1998/Gemi2Api-Server)
-[![GitHub forks](https://img.shields.io/github/forks/zhiyu1998/Gemi2Api-Server.svg?style=social&label=Fork)](https://github.com/zhiyu1998/Gemi2Api-Server/fork)
+[![GitHub stars](https://img.shields.io/github/stars/swhesong/Gemi2Api-Server.svg?style=social&label=Star)](https://github.com/swhesong/Gemi2Api-Server)
+[![GitHub forks](https://img.shields.io/github/forks/swhesong/Gemi2Api-Server.svg?style=social&label=Fork)](https://github.com/swhesong/Gemi2Api-Server/fork)
 
 ---
 
