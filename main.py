@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 import json
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -518,10 +518,11 @@ class ModelInfo(BaseModel):
     created: int = 0
     owned_by: str = "google"
 
+
 # Authentication dependency
-def verify_api_key(api_key: str = None):
+def verify_api_key(authorization: str = Header(None)):
     if API_KEY:
-        if not api_key or api_key != f"Bearer {API_KEY}":
+        if not authorization or authorization != f"Bearer {API_KEY}":
             raise HTTPException(status_code=401, detail="Invalid API key")
 
 # Enhanced error handler middleware with better error classification
@@ -918,7 +919,8 @@ async def create_new_client(client_id: str) -> GeminiClient:
 # Enhanced chat completions endpoint with better error handling and retry logic
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key)):
+
     temp_files = []
     client = None
     max_retries = 3
