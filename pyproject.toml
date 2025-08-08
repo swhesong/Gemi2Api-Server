@@ -1,6 +1,6 @@
 [project]
 name = "gemi2api-server"
-version = "0.2.0"
+version = "0.4.0"
 description = "A high-performance FastAPI server for Gemini Web API, with browser cookie support, advanced logging, and configuration management."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,6 +11,7 @@ dependencies = [
     "lmdb>=1.6.2",
     "loguru>=0.7.3",
     "pydantic-settings[yaml]>=2.10.1",
+    "httpx>=0.25.0",
     "uvicorn[standard]>=0.35.0",
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "python-dotenv>=1.0.0",
