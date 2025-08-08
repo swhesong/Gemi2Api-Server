@@ -8,9 +8,10 @@ from typing import List, Optional, Union
 from pathlib import Path
 import re
 
-import orjson as json
+import json
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from gemini_webapi import GeminiClient
@@ -25,7 +26,14 @@ API_KEY = os.getenv("API_KEY")
 GEMINI_PROXY = os.getenv("GEMINI_PROXY")
 
 app = FastAPI(title="Enhanced Gemini API FastAPI Server", version="0.4.0")
-
+# 新增：添加CORS中间件配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # Enhanced client management with connection pooling
 gemini_clients = {}
 client_pool_size = 3
@@ -71,7 +79,7 @@ async def save_cookie_cache():
     """Save cookie cache to file"""
     try:
         with open(cookie_cache_file, 'w') as f:
-            f.write(json.dumps(cookie_cache).decode())
+            f.write(json.dumps(cookie_cache))
         print(f"💾 Saved cookie cache with {len(cookie_cache)} entries")
     except Exception as e:
         print(f"⚠️ Failed to save cookie cache: {str(e)}")
@@ -132,6 +140,34 @@ def load_browser_cookies_fallback() -> dict:
     except Exception as e:
         print(f"⚠️ Error loading browser cookies: {str(e)}")
         return {}
+def correct_markdown(md_text: str) -> str:
+    """
+    修正Markdown文本，移除Google搜索链接包装器，并根据显示文本简化目标URL。
+    """
+    def simplify_link_target(text_content: str) -> str:
+        match_colon_num = re.match(r"([^:]+:\d+)", text_content)
+        if match_colon_num:
+            return match_colon_num.group(1)
+        return text_content
+
+    def replacer(match: re.Match) -> str:
+        outer_open_paren = match.group(1)
+        display_text = match.group(2)
+
+        new_target_url = simplify_link_target(display_text)
+        new_link_segment = f"[`{display_text}`]({new_target_url})"
+
+        if outer_open_paren:
+            return f"{outer_open_paren}{new_link_segment})"
+        else:
+            return new_link_segment
+            
+    pattern = r"(\()?\[`([^`]+?)`\]\((https://www.google.com/search\?q=)(.*?)(?<!\\)\)\)*(\))?"
+    
+    fixed_google_links = re.sub(pattern, replacer, md_text)
+    # fix wrapped markdownlink
+    pattern = r"`(\[[^\]]+\]\([^\)]+\))`"
+    return re.sub(pattern, r'\1', fixed_google_links)
 
 # 简化的Cookie刷新函数 - 移除不存在的rotate_1psidts函数
 async def rotate_1psidts(cookies: dict, proxy: str = None) -> Optional[str]:
@@ -414,7 +450,10 @@ async def root():
             "improved_cookie_handling",
             "cookie_caching",
             "browser_cookie_fallback",
-            "smart_cookie_refresh"
+            "smart_cookie_refresh",
+            "markdown_link_correction",
+            "thinking_content_extraction",
+            "cors_support"
         ],
     }
 
@@ -670,13 +709,25 @@ async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_a
                 # 短暂延迟后重试，使用指数退避
                 await asyncio.sleep(min(2 ** attempt, 5))  # 指数退避，最大5秒
         
-        # 处理响应内容
-        reply_text = response.text if response and response.text else ""
+        # 处理响应内容 - 新增思考内容提取
+        reply_text = ""
         
-        # 字符转义处理和markdown修正
+        # 新增：提取思考内容
+        if hasattr(response, "thoughts"):
+            reply_text += f"<think>{response.thoughts}</think>"
+            
+        if hasattr(response, "text"):
+            reply_text += response.text
+        else:
+            reply_text += str(response)
+            
+        # 新增：字符转义处理和markdown修正
+        reply_text = reply_text.replace("&lt;","<").replace("\\<","<").replace("\\_","_").replace("\\>",">")
+        reply_text = correct_markdown(reply_text)
+        
         if not reply_text.strip():
             reply_text = "Empty response received from Gemini. Please try again."
-        
+
         # 流式响应处理
         if request.stream:
             async def generate_stream():
@@ -693,7 +744,7 @@ async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_a
                             "finish_reason": None
                         }]
                     }
-                    yield f"data: {json.dumps(chunk).decode()}\n\n"
+                    yield f"data: {json.dumps(chunk)}\n\n"
                     await asyncio.sleep(0.01)  # 控制输出速度
                 
                 # 结束标记
@@ -708,7 +759,7 @@ async def chat_completions(request: ChatRequest, api_key: str = Depends(verify_a
                         "finish_reason": "stop"
                     }]
                 }
-                yield f"data: {json.dumps(final_chunk).decode()}\n\n"
+                yield f"data: {json.dumps(final_chunk)}\n\n"
                 yield "data: [DONE]\n\n"
             
             return StreamingResponse(generate_stream(), media_type="text/plain")
