@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 保险方案)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 单文件方案)
 # =================================================================
 
 # =================================================================
@@ -12,14 +12,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# 安装构建依赖，并添加 ca-certificates, gzip, unzip 等工具，
-# 以确保安装脚本在多平台环境下能正确运行。
+# 安装构建所需的基础依赖
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
-        ca-certificates \
-        gzip \
-        unzip \
         gcc \
         python3-dev \
         build-essential && \
@@ -30,23 +26,16 @@ WORKDIR /app
 # 复制依赖定义文件
 COPY pyproject.toml ./
 
-# --- 【保险修复方案】 ---
-# 如果 uv 仍有问题，回退到传统 pip 方式，但保持多阶段构建
+# --- 【最终修复方案】 ---
+# 将多行 Python 脚本压缩到一行内，以避免 Dockerfile 解析错误。
+# 这段命令会解析 pyproject.toml，生成一个临时的 requirements.txt，然后用 pip 安装。
 RUN python -m pip install --upgrade pip setuptools wheel && \
-    python -c "
-import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
-with open('pyproject.toml', 'rb') as f:
-    data = tomllib.load(f)
-deps = data['project']['dependencies']
-with open('/tmp/requirements.txt', 'w') as f:
-    for dep in deps:
-        f.write(f'{dep}\n')
-" && \
+    python -c "import sys; \
+               try: import tomllib; \
+               except ImportError: import tomli as tomllib; \
+               with open('pyproject.toml', 'rb') as f: data = tomllib.load(f); \
+               deps = data.get('project', {}).get('dependencies', []); \
+               with open('/tmp/requirements.txt', 'w') as f: f.write('\n'.join(deps))" && \
     pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm -f /tmp/requirements.txt
 
@@ -69,7 +58,6 @@ WORKDIR /app
 
 COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
-
 COPY . .
 
 RUN groupadd -g 1000 nobody && \
@@ -79,7 +67,6 @@ RUN groupadd -g 1000 nobody && \
     chown -R nobody:nobody /app
 
 USER nobody
-
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
