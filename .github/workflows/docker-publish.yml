@@ -1,4 +1,4 @@
-# .github/workflows/docker-publish.yml
+# .github/workflows/docker-publish.yml (修正版)
 name: Docker Build and Push
 
 on:
@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,9 +41,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix={{branch}}-{{sha}}
+            type=sha
 
       - name: Build and push Docker image
         id: build
@@ -52,9 +51,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -68,5 +65,5 @@ jobs:
         if: success()
         run: |
           echo "✅ Successfully built and pushed:"
-          echo "  - ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          echo "  - ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /'
+
