@@ -696,14 +696,18 @@ app = FastAPI(
     description="High-performance Gemini Web API server with intelligent session reuse and enhanced configuration",
     lifespan=lifespan
 )
-# 新增：添加CORS中间件配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# 新增：从配置动态添加CORS中间件
+if g_config and getattr(g_config, 'cors', None) and g_config.cors.enabled:
+    print("✅ CORS middleware enabled with settings from config.yaml")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=g_config.cors.allow_origins,
+        allow_credentials=g_config.cors.allow_credentials,
+        allow_methods=g_config.cors.allow_methods,
+        allow_headers=g_config.cors.allow_headers,
+    )
+
 
 # Pydantic models for API requests and responses
 class Message(BaseModel):
