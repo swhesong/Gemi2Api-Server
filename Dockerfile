@@ -28,17 +28,25 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # Set the working directory
 WORKDIR /app
 
-# Copy dependency files
-COPY pyproject.toml .
-COPY uv.lock* ./
+# --- 【关键步骤 1：复制依赖定义文件】 ---
+# 这一步会复制 pyproject.toml 和 uv.lock 文件。
+# 在我们的 GitHub Actions 流程中，uv.lock 是在上一步刚刚为 Linux 平台生成的。
+# 所以这里复制进来的是一个 100% 正确和最新的锁文件。
+COPY pyproject.toml uv.lock* ./
 
-# Use uv to sync dependencies (preferred over pip install)
-# Install all dependencies including optional ones
+# --- 【关键步骤 2：确定性地安装依赖】 ---
+# 使用 uv sync 命令，它比 'pip install' 更快、更可靠。
+# --frozen: 这是一个非常重要的参数。它告诉 uv 严格按照 uv.lock 文件中的版本进行安装，
+#           如果 uv.lock 和 pyproject.toml 不匹配，构建就会失败。
+#           这保证了每次构建都是完全可复现的。
+# --no-dev: 不安装开发依赖（如 ruff, pytest）。
+# --system: 将包装安装到系统级的 Python环境中，而不是虚拟环境。这在 Docker 中是推荐做法。
 RUN uv sync --frozen --no-dev --system
 
 # =================================================================
 # STAGE 2: The Final Stage
 # - Creates the final, clean, and small production image
+
 # =================================================================
 FROM python:3.12-slim-bookworm
 
