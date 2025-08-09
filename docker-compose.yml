@@ -9,7 +9,7 @@ services:
       - ./data:/app/data
       - ./temp:/app/temp
       - ./cache:/app/.venv/lib/python3.12/site-packages/gemini_webapi/utils/temp
-      - ./config.yaml:/app/config.yaml:ro  # 添加配置文件映射
+      # - ./config.yaml:/app/config.yaml:ro  # 添加配置文件映射
     env_file:
       - .env
     environment:
