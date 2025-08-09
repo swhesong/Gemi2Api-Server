@@ -3,9 +3,12 @@ import base64
 import os
 import tempfile
 import time
+import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Union, Dict
 from pathlib import Path
+from contextlib import asynccontextmanager
 import re
 import logging
 import json
@@ -19,8 +22,21 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError, UsageLimitExceeded, ModelInvalid, TemporarilyBlocked
 import httpx
+try:
+    from config import g_config
+    HAS_ENHANCED_CONFIG = True
+    print("✅ Enhanced configuration loaded")
+except ImportError as e:
+    HAS_ENHANCED_CONFIG = False
+    g_config = None
+    print(f"⚠️ Enhanced configuration not available: {e}")
 
-
+try:
+    from enhanced_lmdb import EnhancedLMDBConversationStore
+    HAS_ENHANCED_LMDB = True
+except ImportError:
+    HAS_ENHANCED_LMDB = False
+    EnhancedLMDBConversationStore = None
 try:
     import browser_cookie3 as bc3
     HAS_BROWSER_COOKIE3 = True
@@ -28,13 +44,84 @@ except ImportError:
     HAS_BROWSER_COOKIE3 = False
     bc3 = None
 
+# 新增：LMDB支持 (持久化存储功能)
+try:
+    import lmdb
+    import orjson
+    HAS_LMDB = True
+except ImportError:
+    HAS_LMDB = False
+    lmdb = None
+    orjson = None
+
+# 新增：Loguru支持 (日志系统)
+try:
+    from loguru import logger
+    HAS_LOGURU = True
+except ImportError:
+    HAS_LOGURU = False
+    logger = None
+
+
 # Environment variables
 SECURE_1PSID = os.getenv("SECURE_1PSID")
 SECURE_1PSIDTS = os.getenv("SECURE_1PSIDTS")  
 API_KEY = os.getenv("API_KEY")
 GEMINI_PROXY = os.getenv("GEMINI_PROXY")
 
-app = FastAPI(title="Enhanced Gemini API FastAPI Server", version="0.4.0")
+# 新增：LMDB配置 (存储配置)
+LMDB_PATH = os.getenv("LMDB_PATH", "./data/lmdb")
+LMDB_MAX_SIZE = int(os.getenv("LMDB_MAX_SIZE", "134217728"))  # 128MB
+
+# 新增：消息处理配置 (消息分割功能)
+MAX_CHARS_PER_REQUEST = int(os.getenv("MAX_CHARS_PER_REQUEST", "900000"))  # 90% of 1M limit
+CONTINUATION_HINT = "\n(More messages to come, please reply with just 'ok.')"
+# Enhanced client configuration with all advanced features
+CLIENT_CONFIG = {
+    "timeout": 30,
+    "auto_close": False,
+    "close_delay": 300,
+    "auto_refresh": True,
+    "refresh_interval": 540,  # 9 minutes - matches gemini_webapi default
+    "verbose": True,
+}
+
+# 初始化配置变量
+def initialize_config():
+    global LMDB_PATH, LMDB_MAX_SIZE, MAX_CHARS_PER_REQUEST, CLIENT_CONFIG
+    
+    if HAS_ENHANCED_CONFIG and g_config:
+        try:
+            LMDB_PATH = g_config.storage.path
+            LMDB_MAX_SIZE = g_config.storage.max_size
+            MAX_CHARS_PER_REQUEST = int(g_config.gemini.max_chars_per_request * 0.9)
+            CLIENT_CONFIG.update({
+                "timeout": g_config.gemini.timeout,
+                "auto_refresh": g_config.gemini.auto_refresh,
+                "refresh_interval": g_config.gemini.refresh_interval,
+                "verbose": g_config.gemini.verbose,
+            })
+            print("✅ Using enhanced configuration")
+        except Exception as e:
+            print(f"⚠️ Enhanced config error, using defaults: {e}")
+            # 使用默认值
+            LMDB_PATH = os.getenv("LMDB_PATH", "./data/lmdb")
+            LMDB_MAX_SIZE = int(os.getenv("LMDB_MAX_SIZE", "134217728"))
+            MAX_CHARS_PER_REQUEST = int(os.getenv("MAX_CHARS_PER_REQUEST", "900000"))
+    else:
+        LMDB_PATH = os.getenv("LMDB_PATH", "./data/lmdb")
+        LMDB_MAX_SIZE = int(os.getenv("LMDB_MAX_SIZE", "134217728"))
+        MAX_CHARS_PER_REQUEST = int(os.getenv("MAX_CHARS_PER_REQUEST", "900000"))
+
+# 调用配置初始化
+initialize_config()
+
+app = FastAPI(
+    title="Enhanced Gemini API FastAPI Server", 
+    version="0.5.0+enhanced",
+    description="High-performance Gemini Web API server with intelligent session reuse and enhanced configuration",
+    lifespan=lifespan
+)
 # 新增：添加CORS中间件配置
 app.add_middleware(
     CORSMiddleware,
@@ -94,15 +181,7 @@ cookie_cache = {}
 cookie_cache_file = Path("./temp/.cached_cookies.json")
 cookie_cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-# Enhanced client configuration with all advanced features
-CLIENT_CONFIG = {
-    "timeout": 30,
-    "auto_close": False,
-    "close_delay": 300,
-    "auto_refresh": True,
-    "refresh_interval": 540,  # 9 minutes - matches gemini_webapi default
-    "verbose": True,
-}
+
 
 # Background task for client health monitoring
 health_monitor_task = None
@@ -111,6 +190,110 @@ health_monitor_task = None
 cache_lock = None
 client_pool_lock = None  # 将在startup事件中初始化
 
+# 新增：LMDB会话存储类 (融合项目N的持久化会话管理功能)
+class LMDBConversationStore:
+    """LMDB-based conversation storage with session reuse capabilities"""
+    
+    def __init__(self):
+        self.db_path = Path(LMDB_PATH)
+        self.max_db_size = LMDB_MAX_SIZE
+        self._env = None
+        self._init_environment()
+    
+    def _init_environment(self):
+        """Initialize LMDB environment"""
+        if not HAS_LMDB:
+            print("⚠️ LMDB not available, conversation persistence disabled")
+            return
+            
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._env = lmdb.open(
+                str(self.db_path),
+                map_size=self.max_db_size,
+                max_dbs=1,
+                writemap=True,
+                readahead=False,
+                meminit=False,
+            )
+            print(f"✅ LMDB conversation store initialized at {self.db_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize LMDB: {str(e)}")
+            self._env = None
+    
+    def _hash_conversation(self, messages: List[dict]) -> str:
+        """Generate hash for message list"""
+        combined_hash = hashlib.sha256()
+        for message in messages:
+            message_str = json.dumps(message, sort_keys=True)
+            combined_hash.update(message_str.encode('utf-8'))
+        return combined_hash.hexdigest()
+    
+    def store_conversation(self, messages: List[dict], client_id: str, session_metadata: dict) -> str:
+        """Store conversation with session metadata"""
+        if not self._env:
+            return None
+            
+        try:
+            conv_hash = self._hash_conversation(messages)
+            data = {
+                "messages": messages,
+                "client_id": client_id,
+                "session_metadata": session_metadata,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+            
+            with self._env.begin(write=True) as txn:
+                if HAS_LMDB and orjson:
+                    txn.put(conv_hash.encode('utf-8'), orjson.dumps(data))
+                else:
+                    txn.put(conv_hash.encode('utf-8'), json.dumps(data).encode('utf-8'))
+            
+            print(f"📦 Stored conversation with hash: {conv_hash[:16]}...")
+            return conv_hash
+        except Exception as e:
+            print(f"⚠️ Failed to store conversation: {str(e)}")
+            return None
+    
+    def find_reusable_session(self, messages: List[dict]) -> tuple[dict, List[dict]]:
+        """Find reusable session for message prefix (融合项目N的会话复用逻辑)"""
+        if not self._env:
+            return None, messages
+            
+        try:
+            # Try to find longest matching prefix ending with assistant message
+            for end_idx in range(len(messages) - 1, 1, -1):
+                prefix_messages = messages[:end_idx]
+                if prefix_messages[-1].get("role") == "assistant":
+                    prefix_hash = self._hash_conversation(prefix_messages)
+                    
+                    with self._env.begin() as txn:
+                        data = txn.get(prefix_hash.encode('utf-8'))
+                        if data:
+                            if HAS_LMDB and orjson:
+                                stored_data = orjson.loads(data)
+                            else:
+                                stored_data = json.loads(data.decode('utf-8'))
+                            
+                            remaining_messages = messages[end_idx:]
+                            print(f"♻️ Found reusable session for {len(prefix_messages)} messages")
+                            return stored_data, remaining_messages
+            
+            return None, messages
+        except Exception as e:
+            print(f"⚠️ Error finding reusable session: {str(e)}")
+            return None, messages
+
+# 初始化LMDB存储 (保持单例模式)
+conversation_store = LMDBConversationStore()
+if HAS_ENHANCED_LMDB:
+    conversation_store = EnhancedLMDBConversationStore(LMDB_PATH, LMDB_MAX_SIZE)
+    print("🔧 Using enhanced LMDB storage with session reuse")
+else:
+    # 保持原有存储类
+    conversation_store = LMDBConversationStore()
+    print("🔧 Using basic LMDB storage")
 async def init_locks():
     """Initialize async locks"""
     global cache_lock, client_pool_lock
@@ -427,11 +610,12 @@ async def cleanup_client(client_id: str):
             print(f"⚠️ Error closing client {client_id}: {str(e)}")
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
     global health_monitor_task
     
-    print("🚀 Starting Enhanced Gemini API FastAPI Server v0.4.0")
+    print("🚀 Starting Enhanced Gemini API FastAPI Server v0.5.0+enhanced")
     # 初始化异步锁
     await init_locks()
     # Load cookie cache
@@ -467,11 +651,10 @@ async def startup():
         print("🔥 Pre-warmed initial client successfully")
     except Exception as e:
         print(f"⚠️ Failed to pre-warm client: {str(e)}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    global health_monitor_task
     
+    yield  # 这里是应用运行期间
+    
+    # Shutdown logic
     # Save cookie cache before shutdown
     await save_cookie_cache()
     
@@ -492,6 +675,7 @@ async def shutdown():
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
     
     print("👋 Enhanced Gemini server shutdown complete")
+
 
 # Pydantic models for API requests and responses
 class Message(BaseModel):
@@ -517,7 +701,6 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = 0
     owned_by: str = "google"
-
 
 # Authentication dependency
 def verify_api_key(authorization: str = Header(None)):
@@ -577,7 +760,7 @@ async def error_handler_middleware(request: Request, call_next) -> Response:
 # Health check endpoint with enhanced diagnostics
 @app.get("/health")
 async def health():
-    """Enhanced health check endpoint with client pool status"""
+    """Enhanced health check with configuration info"""
     healthy_clients = 0
     total_clients = len(gemini_clients)
     cookie_cache_size = len(cookie_cache)
@@ -586,10 +769,23 @@ async def health():
         if hasattr(client, 'running') and client.running:
             healthy_clients += 1
     
+    # 新增：增强的存储状态检查
+    storage_status = conversation_store.get_stats() if hasattr(conversation_store, 'get_stats') else {
+        "available": HAS_LMDB, 
+        "initialized": conversation_store._env is not None
+    }
+    
+    # 新增：配置状态检查
+    config_status = {
+        "enhanced_config": HAS_ENHANCED_CONFIG,
+        "enhanced_lmdb": HAS_ENHANCED_LMDB,
+        "config_source": "enhanced" if HAS_ENHANCED_CONFIG else "environment"
+    }
+    
     return {
         "status": "healthy", 
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "version": "0.4.0",
+        "version": "0.5.0+enhanced",
         "client_pool": {
             "total": total_clients,
             "healthy": healthy_clients,
@@ -598,7 +794,28 @@ async def health():
         "cookie_cache": {
             "size": cookie_cache_size,
             "cache_file_exists": cookie_cache_file.exists()
-        }
+        },
+        "storage": storage_status,
+        "config": config_status,
+        "features": [
+            "client_pooling", 
+            "auto_refresh", 
+            "health_monitoring", 
+            "advanced_error_handling", 
+            "improved_cookie_handling",
+            "cookie_caching",
+            "browser_cookie_fallback",
+            "smart_cookie_refresh",
+            "markdown_link_correction",
+            "thinking_content_extraction",
+            "cors_support",
+            "session_reuse",
+            "message_splitting",
+            "lmdb_persistence",
+            "enhanced_config_system",
+            "intelligent_session_reuse",
+            "yaml_config_support"
+        ]
     }
 
 # Root endpoint
@@ -606,7 +823,7 @@ async def health():
 async def root():
     return {
         "message": "Enhanced Gemini API FastAPI Server is running",
-        "version": "0.4.0",
+        "version": "0.5.0+enhanced",
         "features": [
             "client_pooling", 
             "auto_refresh", 
@@ -751,6 +968,7 @@ def map_openai_to_gemini_model(openai_model_name: str) -> Model:
 
 # Enhanced file processing with better security and error handling
 def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
+    """Enhanced conversation preparation with message validation (增强验证)"""
     if not messages:
         raise ValueError("Messages cannot be empty")
     
@@ -761,7 +979,7 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
     temp_files = []
     
     for i, message in enumerate(messages):
-        # 更严格的消息验证
+        # 更严格的消息验证 (增强验证)
         if not isinstance(message, Message):
             print(f"⚠️ Skipping invalid message at index {i}: not a Message instance")
             continue
@@ -774,10 +992,14 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
             print(f"⚠️ Skipping message at index {i}: invalid role '{message.role}'")
             continue
             
+        # 保持原有的内容处理逻辑
         if message.role in ["user", "assistant"]:
             if isinstance(message.content, str):
-                conversation_parts.append(message.content)
+                # 新增：角色标签处理 (融合项目N的标签系统)
+                content = add_role_tag(message.role, message.content)
+                conversation_parts.append(content)
             elif isinstance(message.content, list):
+
                 text_parts = []
                 for content_part in message.content:
                     if content_part.get("type") == "text":
@@ -795,22 +1017,19 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
                                 header, data = image_url.split(",", 1)
                                 image_data = base64.b64decode(data)
                                 
-                                # Validate image size (max 10MB)
                                 if len(image_data) > 10 * 1024 * 1024:
                                     print("⚠️ Image too large (>10MB), skipping")
                                     continue
-                                # Validate minimum image size  
                                 if len(image_data) < 100:
                                     print("⚠️ Image too small, likely invalid, skipping")
                                     continue
-                                # Extract image format from header
+                                    
                                 image_format = re.search(r"image/(\w+)", header)
                                 suffix = f".{image_format.group(1)}" if image_format else ".png"
 
-                                # Create temporary file with proper extension
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="gemini_img_") as temp_file:
                                     temp_file.write(image_data)
-                                    temp_file.flush()  # 确保数据写入磁盘
+                                    temp_file.flush()
                                     temp_files.append(temp_file.name)
                                     print(f"📷 Processed image: {len(image_data)} bytes -> {temp_file.name}")
                             except Exception as e:
@@ -818,11 +1037,76 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
                                 continue
 
                 if text_parts:
-                    conversation_parts.append(" ".join(text_parts))
+                    content = " ".join(text_parts)
+                    # 新增：角色标签处理
+                    content = add_role_tag(message.role, content)
+                    conversation_parts.append(content)
     
     # Join all conversation parts
     conversation = "\n".join(conversation_parts)
     return conversation, temp_files
+
+# 新增：角色标签处理函数 (融合标签系统)
+def add_role_tag(role: str, content: str, unclose: bool = False) -> str:
+    """Add role tags to content (项目N的标签系统)"""
+    if role not in ["user", "assistant", "system"]:
+        return content
+    
+    # 如果已经有角色标签，直接返回
+    if f"<|im_start|>{role}" in content:
+        return content
+        
+    tagged_content = f"<|im_start|>{role}\n{content}"
+    if not unclose:
+        tagged_content += "\n<|im_end|>"
+    
+    return tagged_content
+
+# 新增：消息分割函数 (融合长消息处理)
+async def send_with_split(client, conversation: str, temp_files: List[str], model) -> Any:
+    """Send conversation with automatic splitting for long messages (项目N的消息分割功能)"""
+    if len(conversation) <= MAX_CHARS_PER_REQUEST:
+        # 无需分割
+        if temp_files:
+            return await client.generate_content(
+                prompt=conversation, 
+                files=temp_files,
+                model=model
+            )
+        else:
+            return await client.generate_content(conversation, model=model)
+    
+    # 需要分割
+    print(f"📏 Message too long ({len(conversation)} chars), splitting...")
+    hint_len = len(CONTINUATION_HINT)
+    chunk_size = MAX_CHARS_PER_REQUEST - hint_len
+    
+    chunks = []
+    pos = 0
+    while pos < len(conversation):
+        end = min(pos + chunk_size, len(conversation))
+        chunk = conversation[pos:end]
+        pos = end
+        
+        # 如果不是最后一块，添加继续提示
+        if end < len(conversation):
+            chunk += CONTINUATION_HINT
+        chunks.append(chunk)
+    
+    # 发送除最后一块外的所有块
+    for chunk in chunks[:-1]:
+        try:
+            await client.generate_content(chunk, model=model)
+            print("📤 Sent intermediate chunk")
+        except Exception as e:
+            print(f"❌ Failed to send chunk: {str(e)}")
+            raise
+    
+    # 发送最后一块（包含文件）
+    if temp_files:
+        return await client.generate_content(chunks[-1], files=temp_files, model=model)
+    else:
+        return await client.generate_content(chunks[-1], model=model)
 
 async def get_gemini_client() -> GeminiClient:
     """Get a healthy client from the pool or create a new one"""
@@ -860,93 +1144,151 @@ async def create_new_client(client_id: str) -> GeminiClient:
     try:
         cookies_to_use = {}
         
-        # Try environment variables first
-        if SECURE_1PSID:
+        # 优先使用增强配置
+        if HAS_ENHANCED_CONFIG and g_config and g_config.gemini.clients:
+            # 从配置中选择客户端
+            config_client = g_config.gemini.clients[0]  # 使用第一个配置的客户端
+            cookies_to_use["__Secure-1PSID"] = config_client.secure_1psid
+            if config_client.secure_1psidts:
+                cookies_to_use["__Secure-1PSIDTS"] = config_client.secure_1psidts
+            print(f"🔧 Using enhanced config client: {config_client.id}")
+        elif SECURE_1PSID:
+            # 回退到环境变量
             cookies_to_use["__Secure-1PSID"] = SECURE_1PSID
             if SECURE_1PSIDTS:
                 cookies_to_use["__Secure-1PSIDTS"] = SECURE_1PSIDTS
             
-            # Try to get cached cookies for this PSID
+            # 尝试获取缓存的cookies
             cached_cookies = get_cached_cookies(SECURE_1PSID)
             if cached_cookies:
                 cookies_to_use.update(cached_cookies)
                 print(f"📦 Using cached cookies for client {client_id}")
         else:
-            # Fallback to browser cookies
+            # 浏览器cookie回退
             browser_cookies = load_browser_cookies_fallback()
             if browser_cookies.get("__Secure-1PSID"):
                 cookies_to_use = browser_cookies
                 print(f"🌐 Using browser cookies for client {client_id}")
         
-        # Create client with enhanced cookie handling
+        # 创建客户端
+        proxy_url = None
+        if HAS_ENHANCED_CONFIG and g_config:
+            proxy_url = g_config.gemini.proxy
+        else:
+            proxy_url = GEMINI_PROXY
         if cookies_to_use.get("__Secure-1PSID"):
             client = GeminiClient(
                 secure_1psid=cookies_to_use.get("__Secure-1PSID"),
                 secure_1psidts=cookies_to_use.get("__Secure-1PSIDTS"),
-                proxy=GEMINI_PROXY or None
+                proxy=proxy_url or None
             )
         else:
             # Try with no explicit cookies (gemini_webapi will auto-load browser cookies)
-            client = GeminiClient(proxy=GEMINI_PROXY or None)
+            client = GeminiClient(proxy=proxy_url or None)
             
-        # Initialize with enhanced configuration
-        await client.init(**CLIENT_CONFIG)
+        # 使用增强配置初始化
+        if HAS_ENHANCED_CONFIG and g_config:
+            init_config = {
+                "timeout": g_config.gemini.timeout,
+                "auto_refresh": g_config.gemini.auto_refresh,
+                "refresh_interval": g_config.gemini.refresh_interval,
+                "verbose": g_config.gemini.verbose,
+                **CLIENT_CONFIG
+            }
+        else:
+            init_config = CLIENT_CONFIG
         
-        # Cache the cookies after successful initialization
-        if hasattr(client, 'cookies') and client.cookies.get("__Secure-1PSID"):
-            cache_cookies(client.cookies["__Secure-1PSID"], client.cookies)
+        # Initialize with configuration
+        await client.init(**init_config)
         
+        # Add to pool after successful initialization
         gemini_clients[client_id] = client
         client_last_used[client_id] = time.time()
         client_creation_time[client_id] = time.time()
         
+        # Cache the cookies after successful initialization
+        if hasattr(client, 'cookies') and client.cookies.get("__Secure-1PSID"):
+            cache_cookies(client.cookies["__Secure-1PSID"], client.cookies)
+            
         print(f"✅ New client {client_id} created and initialized successfully")
         return client
-        
-    except AuthError as e:
-        print(f"❌ Authentication failed for client {client_id}: {str(e)}")
-        raise HTTPException(
-            status_code=401, 
-            detail="Authentication failed. Please check your cookies. SECURE_1PSIDTS may have expired or browser login required."
-        )
+
+    except AuthError as auth_e:
+    print(f"❌ Authentication failed for client {client_id}: {str(auth_e)}")
+    raise HTTPException(
+        status_code=401, 
+        detail="Authentication failed. Please check your cookies. SECURE_1PSIDTS may have expired or browser login required."
+    )
     except Exception as e:
-        print(f"❌ Failed to create client {client_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to initialize Gemini client: {str(e)}"
-        )
+    print(f"❌ Failed to create client {client_id}: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    raise HTTPException(
+        status_code=500, 
+        detail=f"Failed to initialize Gemini client: {str(e)}"
+    )
 
 # Enhanced chat completions endpoint with better error handling and retry logic
-
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key)):
-
+    """Enhanced chat completions with intelligent session reuse"""
     temp_files = []
     client = None
     max_retries = 3
     
     try:
-        # 准备对话内容
-        conversation, temp_files = prepare_conversation(request.messages)
+        # 转换消息格式用于存储
+        message_dicts = []
+        for msg in request.messages:
+            msg_dict = {"role": msg.role, "content": msg.content}
+            message_dicts.append(msg_dict)
+        
         model = map_openai_to_gemini_model(request.model)
         
+        # 增强的会话复用逻辑
+        stored_session, remaining_messages = None, message_dicts
+        
+        if HAS_ENHANCED_LMDB and hasattr(conversation_store, 'find_reusable_session'):
+            # 使用增强的会话复用算法
+            available_clients = list(gemini_clients.keys()) if gemini_clients else ["env_client"]
+            stored_session, remaining_messages = conversation_store.find_reusable_session(
+                model.model_name if hasattr(model, 'model_name') else str(model),
+                message_dicts,
+                available_clients
+            )
+        elif hasattr(conversation_store, 'find_reusable_session'):
+        # 使用基本的会话复用
+            stored_session, remaining_messages = conversation_store.find_reusable_session(message_dicts)
+        
+        if stored_session and remaining_messages:
+            print(f"♻️ Using enhanced session reuse, processing {len(remaining_messages)} new messages")
+            # 使用存储的客户端ID获取客户端
+            stored_client_id = stored_session.get("client_id")
+            if stored_client_id and stored_client_id in gemini_clients:
+                client = gemini_clients[stored_client_id]
+                client_last_used[stored_client_id] = time.time()
+            
+            # 只处理剩余的消息
+            remaining_msg_objects = []
+            for msg_dict in remaining_messages:
+                remaining_msg_objects.append(Message(role=msg_dict["role"], content=msg_dict["content"]))
+            conversation, temp_files = prepare_conversation(remaining_msg_objects)
+        else:
+            # 处理完整对话
+            conversation, temp_files = prepare_conversation(request.messages)
+        
+        model = map_openai_to_gemini_model(request.model)
         print(f"📝 Prepared conversation: {conversation[:200]}...")
         
-        # 重试逻辑 - 使用不同的客户端进行重试
+        # 重试逻辑
         for attempt in range(max_retries):
             try:
-                client = await get_gemini_client()
+                if not client:  # 如果没有复用的客户端，获取新的
+                    client = await get_gemini_client()
                 print(f"🚀 Sending request to Gemini (attempt {attempt + 1})")
                 
-                # 生成响应
-                if temp_files:
-                    response = await client.generate_content(
-                        prompt=conversation, 
-                        files=temp_files,
-                        model=model
-                    )
-                else:
-                    response = await client.generate_content(conversation, model=model)
+                # 新增：使用消息分割功能发送请求
+                response = await send_with_split(client, conversation, temp_files, model)
                 
                 # 成功获取响应，跳出重试循环
                 break
@@ -954,7 +1296,6 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
             except Exception as e:
                 print(f"❌ Attempt {attempt + 1} failed: {str(e)}")
                 
-                # 如果是认证错误或者是最后一次尝试，直接抛出异常
                 if isinstance(e, AuthError) or attempt == max_retries - 1:
                     raise e
                 
@@ -964,14 +1305,14 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
                         if stored_client is client:
                             await cleanup_client(client_id)
                             break
+                    client = None  # 重置客户端，下次重试时获取新的
                 
-                # 短暂延迟后重试，使用指数退避
-                await asyncio.sleep(min(2 ** attempt, 5))  # 指数退避，最大5秒
+                await asyncio.sleep(min(2 ** attempt, 5))
         
         # 处理响应内容 - 新增思考内容提取
         reply_text = ""
         
-        # 新增：提取思考内容
+        # 保持原有的思考内容提取
         if hasattr(response, "thoughts"):
             reply_text += f"<think>{response.thoughts}</think>"
             
@@ -980,15 +1321,45 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
         else:
             reply_text += str(response)
             
-        # 新增：字符转义处理和markdown修正
+        # 保持原有的字符转义处理和markdown修正
         reply_text = reply_text.replace("&lt;","<").replace("\\<","<").replace("\\_","_").replace("\\>",">")
         reply_text = correct_markdown(reply_text)
         
         if not reply_text.strip():
             reply_text = "Empty response received from Gemini. Please try again."
+        
+        # 新增：存储完整对话到LMDB (融合会话存储功能)
+        try:
+            complete_messages = message_dicts + [{"role": "assistant", "content": reply_text}]
+            client_id = None
+            for cid, stored_client in gemini_clients.items():
+                if stored_client is client:
+                    client_id = cid
+                    break
+            
+            if client_id:
+                if HAS_ENHANCED_LMDB and hasattr(conversation_store, 'store_conversation'):
+                    # 使用增强的存储方法
+                    conversation_store.store_conversation(
+                        complete_messages,
+                        client_id,
+                        model.model_name if hasattr(model, 'model_name') else str(model),
+                        getattr(client, 'metadata', {})
+                    )
+                else:
+                    # 使用基本存储方法
+                    conversation_store.store_conversation(
+                        complete_messages, 
+                        client_id, 
+                        getattr(client, 'metadata', {})
+                    )
 
-        # 流式响应处理
+        except Exception as e:
+            print(f"⚠️ Failed to store conversation: {str(e)}")
+        
+        # 保持原有的流式和非流式响应逻辑
         if request.stream:
+
             async def generate_stream():
                 # 流式输出文本
                 for char in reply_text:
@@ -1044,6 +1415,7 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
     finally:
         # 清理临时文件
         await cleanup_temp_files(temp_files)
+
 
 async def cleanup_temp_files(temp_files: List[str]):
     """Clean up temporary files safely"""
