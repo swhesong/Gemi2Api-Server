@@ -1,71 +1,95 @@
-# .github/workflows/docker-publish.yml (最终完美版)
+# .github/workflows/docker-publish.yml (最终集成专家版)
 
 name: Docker Build and Push
 
+# 触发器：采纳了第一个文件更专业、更安全的触发机制
+# 1. 在 GitHub 上创建新的 Release 时自动触发。这是发布正式版本的最佳实践。
+# 2. 允许在 Actions 页面手动触发，并可以自定义标签，非常适合测试。
 on:
-  push:
-    branches: [ "main" ]
+  release:
+    types: [created]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '为手动构建指定一个 Docker 标签 (例如: test-feature)'
+        required: false
+        type: string
 
 jobs:
   build-and-push:
-    # 关键点 1: 工作流本身运行在 Linux 环境中
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    
+
     steps:
+      # 步骤 1: 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # =================================================================
-      # ▼▼▼ 自动化核心步骤 ▼▼▼
-      # 在 Linux 环境中，为 Linux 目标动态生成正确的 requirements.txt
-      # =================================================================
-      - name: Set up Python
+      # 步骤 2: 【优势融合】修复 Shell 脚本的行尾，防止跨平台(Windows/Linux)错误
+      - name: Ensure LF line endings for shell scripts
+        run: |
+          if ! command -v dos2unix &> /dev/null; then
+            sudo apt-get update -y > /dev/null && sudo apt-get install -y dos2unix > /dev/null
+          fi
+          find . -type f -name "*.sh" -exec dos2unix {} +
+
+      # 步骤 3: 【核心功能保留】自动生成最新的 requirements.txt
+      - name: Set up Python for dependency generation
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install uv (modern Python packager)
+      - name: Install uv for rapid dependency resolution
         run: pip install uv
       
-      - name: Generate Linux-compatible requirements.txt
-        # 关键点 2: 这条命令在 Linux (ubuntu-latest) 上运行，
-        # uv 会自动解析出适合 Linux 的依赖，不会包含 pywin32 等包。
-        run: uv pip compile pyproject.toml -o requirements.txt
-        
-      # (可选) 查看生成的 requirements.txt 内容，方便调试
-      - name: Display generated requirements.txt
-        run: cat requirements.txt
-      # =================================================================
-      # ▲▲▲ 自动化核心步骤结束 ▲▲▲
-      # =================================================================
-
-      - name: Set up QEMU for multi-platform build
+      - name: Generate requirements.txt from pyproject.toml
+        run: uv pip compile pyproject.toml --quiet -o requirements.txt
+      
+      # 步骤 4: 设置 QEMU (用于多平台构建)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # 步骤 5: 设置 Docker Buildx (现代化的构建引擎)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 步骤 6: 登录到 Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push multi-platform Docker image
+      # 步骤 7: 【核心优势融合】使用官方 Action 专业地提取元数据 (标签和注释)
+      # 这是最现代、最强大的方式来管理 Docker 标签，完全自动化。
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # 重要：这里的镜像名称要与您的项目匹配
+          images: devinglaw/genmini2api
+          tags: |
+            # 规则1: 当创建 Git 标签 (如 v1.2.3) 时，自动生成 Docker 标签 1.2.3 和 1.2
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # 规则2: 当手动触发时，如果输入了 tag，就使用它
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            # 规则3 (安全发布): 仅在创建 Release 时，才将镜像标记为 latest
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+
+      # 步骤 8: 【最终构建与推送】使用提取的元数据和缓存进行构建
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          # 关键点 3: Docker Buildx 会为 amd64 和 arm64 分别构建。
-          # 它会使用上面生成的同一个 requirements.txt 文件。
-          # pip 在各自的架构下安装时，会自动下载对应架构的包。
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            devinglaw/genmini2api:latest
-            devinglaw/genmini2api:${{ github.sha }}
+          # 使用上一步自动生成的标签和注释，告别手动硬编码
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 启用缓存，极大提升后续构建速度
           cache-from: type=gha
           cache-to: type=gha,mode=max
