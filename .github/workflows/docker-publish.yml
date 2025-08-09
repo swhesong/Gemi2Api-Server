@@ -50,8 +50,8 @@ jobs:
           push: true
           tags: |
             devinglaw/genmini2api:latest
-            # devinglaw/genmini2api:amd64-latest  # 注意：buildx v5 不再自动为平台创建单独的标签
-            # devinglaw/genmini2api:arm64-latest  # 您可以为每个平台创建单独的构建 job 如果需要
+            devinglaw/genmini2api:amd64-latest
+            devinglaw/genmini2api:arm64-latest
           # 移除 build-args，因为镜像源已在 pyproject.toml 中配置
           # build-args: |
           #   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
