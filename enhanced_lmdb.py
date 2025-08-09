@@ -169,7 +169,7 @@ class EnhancedLMDBConversationStore:
                 "available": True,
                 "stats": stats,
                 "path": str(self.db_path),
-                "entries": stats['entries'] if 'entries' in stats else 0
+                "entries": stats.get('entries', 0)
             }
         except Exception as e:
             return {"available": True, "error": str(e)}
