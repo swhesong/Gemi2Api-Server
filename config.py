@@ -83,6 +83,7 @@ class EnhancedConfig(BaseSettings):
         
     def _load_from_env(self):
         """Load configuration from environment variables (保持项目A兼容性)"""
+        # Load Gemini client configuration
         if os.getenv("SECURE_1PSID"):
             client = GeminiClientSettings(
                 id="env_client",
@@ -92,13 +93,13 @@ class EnhancedConfig(BaseSettings):
             if not self.gemini.clients:
                 self.gemini.clients = [client]
         
+        # Load server configuration
         if os.getenv("API_KEY"):
             self.server.api_key = os.getenv("API_KEY")
         
         if os.getenv("GEMINI_PROXY"):
             self.gemini.proxy = os.getenv("GEMINI_PROXY")
         
-        # 修复：添加其他环境变量的加载，增加类型检查
         if os.getenv("HOST"):
             self.server.host = os.getenv("HOST")
         
@@ -107,9 +108,12 @@ class EnhancedConfig(BaseSettings):
                 port_val = int(os.getenv("PORT"))
                 if 1 <= port_val <= 65535:
                     self.server.port = port_val
+                else:
+                    print(f"⚠️ PORT value out of range: {port_val}, using default")
             except (ValueError, TypeError):
                 print(f"⚠️ Invalid PORT value: {os.getenv('PORT')}, using default")
         
+        # Load storage configuration
         if os.getenv("LMDB_PATH"):
             self.storage.path = os.getenv("LMDB_PATH")
         
@@ -118,14 +122,19 @@ class EnhancedConfig(BaseSettings):
                 size_val = int(os.getenv("LMDB_MAX_SIZE"))
                 if size_val > 0:
                     self.storage.max_size = size_val
+                else:
+                    print(f"⚠️ LMDB_MAX_SIZE must be positive, using default")
             except (ValueError, TypeError):
                 print(f"⚠️ Invalid LMDB_MAX_SIZE value: {os.getenv('LMDB_MAX_SIZE')}, using default")
         
+        # Load Gemini configuration
         if os.getenv("MAX_CHARS_PER_REQUEST"):
             try:
                 chars_val = int(os.getenv("MAX_CHARS_PER_REQUEST"))
                 if chars_val > 0:
                     self.gemini.max_chars_per_request = chars_val
+                else:
+                    print(f"⚠️ MAX_CHARS_PER_REQUEST must be positive, using default")
             except (ValueError, TypeError):
                 print(f"⚠️ Invalid MAX_CHARS_PER_REQUEST value: {os.getenv('MAX_CHARS_PER_REQUEST')}, using default")
 
@@ -146,6 +155,20 @@ def create_config():
                 secure_1psidts=os.getenv("SECURE_1PSIDTS")
             )]
         
+        try:
+            port = int(os.getenv("PORT", "8000"))
+            if not (1 <= port <= 65535):
+                port = 8000
+        except (ValueError, TypeError):
+            port = 8000
+            
+        try:
+            max_size = int(os.getenv("LMDB_MAX_SIZE", "134217728"))
+            if max_size <= 0:
+                max_size = 134217728
+        except (ValueError, TypeError):
+            max_size = 134217728
+        
         return EnhancedConfig(
             gemini=GeminiConfig(
                 clients=fallback_clients,
@@ -154,11 +177,11 @@ def create_config():
             server=ServerConfig(
                 api_key=os.getenv("API_KEY"),
                 host=os.getenv("HOST", "0.0.0.0"),
-                port=int(os.getenv("PORT", "8000"))
+                port=port
             ),
             storage=StorageConfig(
                 path=os.getenv("LMDB_PATH", "./data/lmdb"),
-                max_size=int(os.getenv("LMDB_MAX_SIZE", "134217728"))
+                max_size=max_size
             )
         )
 
