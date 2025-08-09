@@ -4,6 +4,8 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # 设置工作目录
 WORKDIR /app
 
+# 设置为非交互模式，避免 apt-get 在构建时卡住或报错
+ENV DEBIAN_FRONTEND=noninteractive
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
