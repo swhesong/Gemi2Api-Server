@@ -67,7 +67,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # 它是目前最标准和稳妥的跨架构安装方式。
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates wget; \
+    apt-get install -y --no-install-recommends ca-certificates wget gnupg dirmngr; \
     dpkgArch="$(dpkg --print-architecture)"; \
     wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.17/gosu-${dpkgArch}"; \
     wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/1.17/gosu-${dpkgArch}.asc"; \
@@ -84,7 +84,7 @@ RUN set -eux; \
     # 安装 curl 用于健康检查
     apt-get install -y --no-install-recommends curl; \
     # 清理工作，减小镜像体积
-    apt-get purge -y --auto-remove wget; \
+    apt-get purge -y --auto-remove wget gnupg dirmngr; \
 
     rm -rf /var/lib/apt/lists/*
 
