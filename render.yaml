@@ -16,5 +16,10 @@ services:
         sync: false
       - key: GEMINI_PROXY
         sync: false
+      - key: HOST
+        value: "0.0.0.0"
+      - key: PORT
+        value: "8000"
     healthCheckPath: /health
     autoDeploy: true
+    startCommand: python start.py
