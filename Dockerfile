@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 最终稳健方案)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台 - 最终正确方案)
 # =================================================================
 
 # =================================================================
@@ -10,37 +10,30 @@ FROM python:3.12-slim-bookworm as builder
 # 设置环境变量
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # 确保 pip 使用 build isolation，这是处理 pyproject.toml 的最佳实践
+    PIP_USE_PEP517=1
 
-# 安装构建所需的基础依赖
+# 更新系统并安装最基础的构建工具
+# gcc 和 build-essential 是为了编译某些Python包的C扩展
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
         gcc \
-        python3-dev \
         build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 复制依赖定义文件
-COPY pyproject.toml ./
+# 复制定义项目元数据和依赖的文件
+COPY pyproject.toml pyproject.toml
 
-# --- 【最终稳健方案】 ---
-# 步骤 1: 安装依赖解析工具 (独立指令)
-RUN python -m pip install --upgrade pip setuptools wheel tomli
-
-# 步骤 2: 解析 toml 文件并生成 requirements.txt (独立指令)
-# 这是最关键的一步，将其独立出来可以确保文件生成过程的稳定性。
-RUN python -c "import sys; \
-               try: import tomllib; \
-               except ImportError: import tomli as tomllib; \
-               with open('pyproject.toml', 'rb') as f: data = tomllib.load(f); \
-               deps = data.get('project', {}).get('dependencies', []); \
-               with open('/tmp/requirements.txt', 'w') as f: f.write('\n'.join(deps))"
-
-# 步骤 3: 从生成的 requirements.txt 文件安装依赖 (独立指令)
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# --- 【最终正确方案】 ---
+# 抛弃所有复杂的脚本。直接让 pip 从 pyproject.toml 安装依赖。
+# pip 本身就具备解析此文件的能力。这是最直接、最可靠的方法。
+# `.` 指的是当前目录，pip 会自动查找该目录下的 pyproject.toml 文件。
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir .
 
 # =================================================================
 # STAGE 2: The Final Stage (这部分无需改动)
@@ -59,10 +52,14 @@ RUN apt-get update && \
 
 WORKDIR /app
 
+# 从 builder 阶段复制已经安装好的依赖包
 COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
+
+# 复制应用程序代码
 COPY . .
 
+# 设置用户和权限
 RUN groupadd -g 1000 nobody && \
     useradd -u 1000 -g nobody -s /bin/false nobody && \
     mkdir -p /app/data /app/temp /app/cache && \
