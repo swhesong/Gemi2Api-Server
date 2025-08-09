@@ -97,8 +97,8 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --from=builder /app /app
 
 # 创建一个安全的、无登录权限的系统用户来运行应用
-COPY entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["entrypoint.sh"]
 # 创建用户 (注意：这里我们先不切换用户，让 entrypoint.sh 以 root 身份运行)
 RUN groupadd -r appgroup && \
@@ -117,3 +117,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # 设置容器的默认启动命令
 CMD ["python", "start.py"]
+
