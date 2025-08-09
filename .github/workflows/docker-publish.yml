@@ -1,4 +1,4 @@
-# .github/workflows/docker-publish.yml (最终集成版)
+# .github/workflows/docker-publish.yml (最终完美版)
 
 name: Docker Build and Push
 
@@ -9,58 +9,59 @@ on:
 
 jobs:
   build-and-push:
+    # 关键点 1: 工作流本身运行在 Linux 环境中
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     
     steps:
-      # 步骤 1: 检出您的代码库
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # =================================================================
-      # ▼▼▼ 新增的自动化步骤 ▼▼▼
-      # 在构建 Docker 镜像之前，先动态生成最新的 requirements.txt
+      # ▼▼▼ 自动化核心步骤 ▼▼▼
+      # 在 Linux 环境中，为 Linux 目标动态生成正确的 requirements.txt
       # =================================================================
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install uv (for dependency resolution)
+      - name: Install uv (modern Python packager)
         run: pip install uv
       
-      - name: Generate requirements.txt from pyproject.toml
+      - name: Generate Linux-compatible requirements.txt
+        # 关键点 2: 这条命令在 Linux (ubuntu-latest) 上运行，
+        # uv 会自动解析出适合 Linux 的依赖，不会包含 pywin32 等包。
         run: uv pip compile pyproject.toml -o requirements.txt
         
+      # (可选) 查看生成的 requirements.txt 内容，方便调试
+      - name: Display generated requirements.txt
+        run: cat requirements.txt
       # =================================================================
-      # ▲▲▲ 新增步骤结束 ▲▲▲
-      # 后续步骤保持不变，它们将使用上面刚刚生成的 requirements.txt 文件
+      # ▲▲▲ 自动化核心步骤结束 ▲▲▲
       # =================================================================
 
-      # 步骤 2: 设置 QEMU (用于多平台构建)
-      - name: Set up QEMU
+      - name: Set up QEMU for multi-platform build
         uses: docker/setup-qemu-action@v3
 
-      # 步骤 3: 设置 Docker Buildx (构建工具)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 步骤 4: 登录到 Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 步骤 5: 构建并推送 Docker 镜像
-      # 这一步会读取您项目中的 Dockerfile，并使用在前面步骤中
-      # 刚刚动态生成的 requirements.txt 来完成构建。
-      - name: Build and push Docker image
+      - name: Build and push multi-platform Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          # 关键点 3: Docker Buildx 会为 amd64 和 arm64 分别构建。
+          # 它会使用上面生成的同一个 requirements.txt 文件。
+          # pip 在各自的架构下安装时，会自动下载对应架构的包。
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
