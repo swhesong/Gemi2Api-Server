@@ -13,10 +13,10 @@ def setup_environment():
     print("🚀 Enhanced Gemini API Server v0.5.0+enhanced")
     print("=" * 50)
     
-    # 检查Python版本
+    # 检查Python版本 - 修复版本检查不一致的问题
     python_version = sys.version_info
     if python_version < (3, 10):
-        print(f"❌ Python {python_version.major}.{python_version.minor} detected. Requires Python 3.9+")
+        print(f"❌ Python {python_version.major}.{python_version.minor} detected. Requires Python 3.10+")
         sys.exit(1)
     else:
         print(f"✅ Python {python_version.major}.{python_version.minor}.{python_version.micro}")
@@ -61,31 +61,44 @@ def setup_environment():
         print("⚠️ No credentials found in environment or config file")
         print("   The server will attempt to use browser cookies as fallback")
     
-    # 检查依赖
+    # 检查依赖 - 添加更友好的错误处理
     dependencies = [
-        ("lmdb", "Enhanced LMDB support"),
-        ("orjson", "Fast JSON serialization"),
-        ("browser_cookie3", "Browser cookie support"),
-        ("loguru", "Enhanced logging"),
-        ("pydantic_settings", "YAML configuration"),
-        ("gemini_webapi", "Gemini Web API client"),
-        ("fastapi", "FastAPI framework"),
-        ("uvicorn", "ASGI server"),
+        ("lmdb", "Enhanced LMDB support", False),  # 可选依赖
+        ("orjson", "Fast JSON serialization", False),  # 可选依赖
+        ("browser_cookie3", "Browser cookie support", False),  # 可选依赖
+        ("loguru", "Enhanced logging", True),  # 必需依赖
+        ("pydantic_settings", "YAML configuration", True),  # 必需依赖
+        ("gemini_webapi", "Gemini Web API client", False),  # 可选依赖
+        ("fastapi", "FastAPI framework", True),  # 必需依赖
+        ("uvicorn", "ASGI server", True),  # 必需依赖
     ]
     
-    missing_deps = []
-    for module_name, description in dependencies:
+    missing_critical_deps = []
+    missing_optional_deps = []
+    
+    for module_name, description, is_required in dependencies:
         try:
             __import__(module_name)
             print(f"✅ {description} available")
         except ImportError:
-            print(f"❌ {description} not available")
-            missing_deps.append(module_name)
+            if is_required:
+                print(f"❌ {description} not available (REQUIRED)")
+                missing_critical_deps.append(module_name)
+            else:
+                print(f"⚠️ {description} not available (optional)")
+                missing_optional_deps.append(module_name)
     
-    if missing_deps:
-        print(f"❌ Missing dependencies: {', '.join(missing_deps)}")
+    # 只有缺少关键依赖时才退出
+    if missing_critical_deps:
+        print(f"❌ Missing critical dependencies: {', '.join(missing_critical_deps)}")
         print("   Install with: uv sync or pip install -r requirements.txt")
         sys.exit(1)
+    
+    # 警告可选依赖缺失，但不退出
+    if missing_optional_deps:
+        print(f"⚠️ Missing optional dependencies: {', '.join(missing_optional_deps)}")
+        print("   Some features may be disabled.")
+    
     print("=" * 50)
 
 def main():
@@ -132,7 +145,6 @@ def main():
             log_level="info",
             reload=False,
             access_log=True,
-            # 添加更多配置选项
             workers=1,  # 单工作进程避免并发问题
             timeout_keep_alive=30,
         )
