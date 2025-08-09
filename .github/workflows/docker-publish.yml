@@ -1,18 +1,19 @@
-# .github/workflows/docker-publish.yml (最终集成专家版)
+# .github/workflows/docker-publish.yml (最终集成专家版 - 推荐)
 
 name: Docker Build and Push
 
-# 触发器：采纳了第一个文件更专业、更安全的触发机制
-# 1. 在 GitHub 上创建新的 Release 时自动触发。这是发布正式版本的最佳实践。
-# 2. 允许在 Actions 页面手动触发，并可以自定义标签，非常适合测试。
+# 触发器：
+# 1. 在 GitHub 上创建新的 Release 时自动触发。
+# 2. 允许在 Actions 页面手动触发。
 on:
   release:
     types: [created]
   workflow_dispatch:
     inputs:
       tag:
-        description: '为手动构建指定一个 Docker 标签 (例如: test-feature)'
-        required: true
+        description: '可选：为手动构建指定一个 Docker 标签 (如: test-feature)'
+        # ▼▼▼ 变更 1: 将其设为可选，以启用默认标签功能 ▼▼▼
+        required: false
         type: string
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 步骤 2: 【优势融合】修复 Shell 脚本的行尾，防止跨平台(Windows/Linux)错误
+      # 步骤 2: 修复 Shell 脚本的行尾
       - name: Ensure LF line endings for shell scripts
         run: |
           if ! command -v dos2unix &> /dev/null; then
@@ -35,7 +36,7 @@ jobs:
           fi
           find . -type f -name "*.sh" -exec dos2unix {} +
 
-      # 步骤 3: 【核心功能保留】自动生成最新的 requirements.txt
+      # 步骤 3: 自动生成最新的 requirements.txt
       - name: Set up Python for dependency generation
         uses: actions/setup-python@v5
         with:
@@ -51,7 +52,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 步骤 5: 设置 Docker Buildx (现代化的构建引擎)
+      # 步骤 5: 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -62,24 +63,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 步骤 7: 【核心优势融合】使用官方 Action 专业地提取元数据 (标签和注释)
-      # 这是最现代、最强大的方式来管理 Docker 标签，完全自动化。
+      # 步骤 7: 使用官方 Action 专业地提取元数据 (标签和注释)
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 重要：这里的镜像名称要与您的项目匹配
           images: devinglaw/genmini2api
           tags: |
-            # 规则1: 当创建 Git 标签 (如 v1.2.3) 时，自动生成 Docker 标签 1.2.3 和 1.2
+            # 规则1: Release 时使用 semver (例如 v1.2.3 -> 1.2.3, 1.2)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # 规则2: 当手动触发时，如果输入了 tag，就使用它
+
+            # 规则2: 手动触发时，如果用户输入了 tag，就使用它
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
-            # 规则3 (安全发布): 仅在创建 Release 时，才将镜像标记为 latest
+
+            # ▼▼▼ 变更 2: 智能后备标签规则 ▼▼▼
+            # 规则3: 如果是手动触发且用户没有输入tag，则使用 commit sha 作为标签
+            type=sha,prefix=dev-,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' }}
+            
+            # 规则4 (安全发布): 仅在创建 Release 时，才将镜像标记为 latest
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
-      # 步骤 8: 【最终构建与推送】使用提取的元数据和缓存进行构建
+      # 步骤 8: 构建与推送
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -87,9 +92,7 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          # 使用上一步自动生成的标签和注释，告别手动硬编码
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # 启用缓存，极大提升后续构建速度
           cache-from: type=gha
           cache-to: type=gha,mode=max
