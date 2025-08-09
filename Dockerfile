@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 绝对可靠方案)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 最终稳健方案)
 # =================================================================
 
 # =================================================================
@@ -26,19 +26,21 @@ WORKDIR /app
 # 复制依赖定义文件
 COPY pyproject.toml ./
 
-# --- 【最终修复方案】 ---
-# 1. 明确安装 tomli 作为备用，确保脚本在任何情况下都能运行。
-# 2. 使用 Python 打印每个依赖，然后用 Shell 的 ">" 重定向到文件。
-#    这是最可靠的方式，完全避免了所有棘手的字符转义问题。
-RUN python -m pip install --upgrade pip setuptools wheel tomli && \
-    python -c "import sys; \
+# --- 【最终稳健方案】 ---
+# 步骤 1: 安装依赖解析工具 (独立指令)
+RUN python -m pip install --upgrade pip setuptools wheel tomli
+
+# 步骤 2: 解析 toml 文件并生成 requirements.txt (独立指令)
+# 这是最关键的一步，将其独立出来可以确保文件生成过程的稳定性。
+RUN python -c "import sys; \
                try: import tomllib; \
                except ImportError: import tomli as tomllib; \
                with open('pyproject.toml', 'rb') as f: data = tomllib.load(f); \
                deps = data.get('project', {}).get('dependencies', []); \
-               for d in deps: print(d)" > /tmp/requirements.txt && \
-    pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm -f /tmp/requirements.txt
+               with open('/tmp/requirements.txt', 'w') as f: f.write('\n'.join(deps))"
+
+# 步骤 3: 从生成的 requirements.txt 文件安装依赖 (独立指令)
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # =================================================================
 # STAGE 2: The Final Stage (这部分无需改动)
