@@ -9,8 +9,7 @@ FROM python:3.12-slim-bookworm as builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_USE_PEP517=1
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -23,11 +22,12 @@ WORKDIR /app
 
 COPY pyproject.toml pyproject.toml
 
+# 使用 --no-cache-dir 减少镜像大小
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir .
 
 # =================================================================
-# STAGE 2: The Final Stage (修正此处)
+# STAGE 2: The Final Stage (最终修正此处)
 # =================================================================
 FROM python:3.12-slim-bookworm
 
@@ -48,14 +48,17 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY . .
 
 # --- 【最终修正】 ---
-# 移除了不必要的 `chmod +x start.py` 命令，因为它导致了失败。
-# `CMD ["python", "start.py"]` 不需要文件具有可执行权限。
-RUN groupadd -g 1000 nobody && \
-    useradd -u 1000 -g nobody -s /bin/false nobody && \
+# 1. 创建一个全新的、专用的、不会冲突的用户'appuser'和组'appgroup'
+#    -r 选项表示创建一个系统用户/组
+# 2. 将相关目录的所有权赋予这个新用户
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup -s /bin/false appuser && \
     mkdir -p /app/data /app/temp /app/cache && \
-    chown -R nobody:nobody /app
+    chown -R appuser:appgroup /app
 
-USER nobody
+# 使用新创建的非root用户运行应用
+USER appuser
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
