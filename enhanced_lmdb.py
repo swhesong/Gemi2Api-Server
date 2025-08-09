@@ -2,7 +2,7 @@ import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Union, Any
 import json
 
 try:
@@ -60,7 +60,7 @@ class EnhancedLMDBConversationStore:
         
         return combined_hash.hexdigest()
     
-    def store_conversation(self, messages: List[Dict], client_id: str, model: str, session_metadata: Dict = None) -> Optional[str]:
+    def store_conversation(self, messages: List[Dict], client_id: str, model: str, session_metadata: Optional[Dict] = None) -> Optional[str]:
         """Store conversation with enhanced metadata"""
         if not self._env or not messages:
             return None
@@ -90,14 +90,12 @@ class EnhancedLMDBConversationStore:
             print(f"⚠️ Failed to store conversation: {str(e)}")
             return None
     
-    def find_reusable_session(self, model: str, messages: List[Dict], available_clients: List[str] = None) -> Tuple[Optional[Dict], List[Dict]]:
-    # 将 Tuple 改为 tuple 以支持 Python 3.9+
-    # 或者添加 from typing import Tuple 导入
+    def find_reusable_session(self, model: str, messages: List[Dict], available_clients: Optional[List[str]] = None) -> tuple[Optional[Dict], List[Dict]]:
         """
         Find reusable session using intelligent prefix matching (项目N的核心算法)
         
         Returns:
-            Tuple of (stored_session_data, remaining_messages)
+            tuple of (stored_session_data, remaining_messages)
         """
         if not self._env or len(messages) < 2:
             return None, messages
