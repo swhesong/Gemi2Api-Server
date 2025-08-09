@@ -18,7 +18,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
         gcc \
-        python3-dev && \
+        python3-dev \
+        build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 # Install the uv tool itself using the official script
@@ -27,13 +28,13 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # Set the working directory
 WORKDIR /app
 
-# Copy only the dependency definition file first to leverage Docker cache
+# Copy dependency files
 COPY pyproject.toml .
+COPY uv.lock* ./
 
-# Use uv to install all Python dependencies defined in pyproject.toml
-# --system installs them to the global site-packages directory
-RUN uv pip install --system --no-cache-dir .
-
+# Use uv to sync dependencies (preferred over pip install)
+# Install all dependencies including optional ones
+RUN uv sync --frozen --no-dev --system
 
 # =================================================================
 # STAGE 2: The Final Stage
@@ -46,30 +47,36 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install only the runtime dependencies. In this case, only 'curl' for the healthcheck.
+# Install only the runtime dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy the installed Python packages from the 'builder' stage
 COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
 # Copy the rest of the application code
 COPY . .
 
-# Create necessary directories and set executable permission for the start script
+# Create necessary directories and set permissions
 RUN mkdir -p /app/data /app/temp /app/cache && \
-    chmod +x start.py
+    chmod +x start.py && \
+    chown -R nobody:nogroup /app
+
+# Switch to non-root user for security
+USER nobody
 
 # Expose the application port
 EXPOSE 8000
 
-# Define a healthcheck to ensure the application is running correctly
+# Define a healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Define the command to run the application
 CMD ["python", "start.py"]
-
