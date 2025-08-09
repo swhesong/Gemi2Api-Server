@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台优化版)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台优化版 v2)
 # =================================================================
 
 # =================================================================
@@ -24,29 +24,24 @@ RUN apt-get update && \
         build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# 安装 uv 工具
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-# 将 uv 加入 PATH，确保后续命令可以找到它
-ENV PATH="/root/.cargo/bin:$PATH"
-
 # 设置工作目录
 WORKDIR /app
 
-# --- 【关键步骤 1：复制依赖定义文件】 ---
-# 只复制 pyproject.toml。这是为了充分利用 Docker 的缓存。
-# 只有当这个文件发生变化时，下面的依赖安装步骤才会重新执行。
+# 复制依赖定义文件
 COPY pyproject.toml ./
 
-# --- 【关键步骤 2：平台感知的依赖安装】 ---
-# 使用 'uv pip install' 而不是 'uv sync'。
-# 'uv pip install' 会根据当前构建的平台（TARGETPLATFORM）去解析和安装正确的依赖。
-# 这就解决了之前 amd64 的锁文件在 arm64 上不兼容的问题。
-# --no-dev: 不安装开发依赖。
-# --system: 将包安装到系统 Python 环境中，这是在 Docker 中推荐的做法。
-RUN uv pip install --no-cache-dir --no-dev --system .
+# --- 【关键步骤：在同一层中安装 uv 并使用它】 ---
+# 将 uv 的安装和使用合并到一条 RUN 指令中，以确保 PATH 生效，避免 "command not found" (exit 127) 错误。
+# 使用 '&& \' 连接命令。
+# 1. 安装 uv
+# 2. 将 uv 添加到 PATH
+# 3. 使用 'uv pip install' 安装依赖
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    export PATH="/root/.cargo/bin:$PATH" && \
+    uv pip install --no-cache-dir --no-dev --system .
 
 # =================================================================
-# STAGE 2: The Final Stage
+# STAGE 2: The Final Stage (这部分保持不变)
 # - 创建最终的、干净的、小体积的生产镜像
 # =================================================================
 FROM python:3.12-slim-bookworm
@@ -74,7 +69,6 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY . .
 
 # 创建应用所需的目录，并为启动脚本添加执行权限
-# 注意：这里我们创建一个普通用户 nobody 来运行程序，以增强安全性
 RUN groupadd -g 1000 nobody && \
     useradd -u 1000 -g nobody -s /bin/false nobody && \
     mkdir -p /app/data /app/temp /app/cache && \
@@ -87,7 +81,7 @@ USER nobody
 # 暴露应用程序端口
 EXPOSE 8000
 
-# 定义健康检查，这和您原来的一样
+# 定义健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
 
