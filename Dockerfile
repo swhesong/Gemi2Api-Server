@@ -62,12 +62,30 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# 安装运行时的最小系统依赖 (curl 用于健康检查)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        su-exec \
-        ca-certificates && \
+# ▼▼▼ 跨架构 gosu 安装 ▼▼▼
+# 这段脚本会自动检测CPU架构 (arm64/amd64) 并下载对应的 gosu 版本。
+# 它是目前最标准和稳妥的跨架构安装方式。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates wget; \
+    dpkgArch="$(dpkg --print-architecture)"; \
+    wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/1.17/gosu-${dpkgArch}"; \
+    wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/1.17/gosu-${dpkgArch}.asc"; \
+    # 验证 gosu 的签名以确保安全
+    export GNUPGHOME="$(mktemp -d)"; \
+    gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
+    gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
+    gpgconf --kill all; \
+    rm -rf "$GNUPGHOME" /usr/local/bin/gosu.asc; \
+    # 赋予执行权限
+    chmod +x /usr/local/bin/gosu; \
+    # 验证安装成功
+    gosu --version; \
+    # 安装 curl 用于健康检查
+    apt-get install -y --no-install-recommends curl; \
+    # 清理工作，减小镜像体积
+    apt-get purge -y --auto-remove wget; \
+
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -85,7 +103,7 @@ ENTRYPOINT ["entrypoint.sh"]
 # 创建用户 (注意：这里我们先不切换用户，让 entrypoint.sh 以 root 身份运行)
 RUN groupadd -r appgroup && \
     useradd -r -g appgroup -s /bin/false appuser
-    # 注意：chown 的逻辑移到了 entrypoint.sh 中，这里可以简化或保留
+
 
 # 切换到这个非root用户
 # USER appuser
