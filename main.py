@@ -22,6 +22,7 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 from gemini_webapi.exceptions import AuthError, APIError, TimeoutError, UsageLimitExceeded, ModelInvalid, TemporarilyBlocked
 import httpx
+# Enhanced configuration import
 try:
     from config import g_config
     HAS_ENHANCED_CONFIG = True
@@ -31,12 +32,14 @@ except ImportError as e:
     g_config = None
     print(f"⚠️ Enhanced configuration not available: {e}")
 
+# Enhanced LMDB import
 try:
     from enhanced_lmdb import EnhancedLMDBConversationStore
     HAS_ENHANCED_LMDB = True
 except ImportError:
     HAS_ENHANCED_LMDB = False
     EnhancedLMDBConversationStore = None
+# Browser cookie support
 try:
     import browser_cookie3 as bc3
     HAS_BROWSER_COOKIE3 = True
@@ -87,6 +90,32 @@ CLIENT_CONFIG = {
 }
 
 # 初始化配置变量
+gemini_clients = {}
+client_pool_size = 3
+client_last_used = {}
+client_creation_time = {}
+CLIENT_IDLE_TIMEOUT = 900  # 15 minutes
+CLIENT_MAX_LIFETIME = 1800  # 30 minutes maximum lifetime
+CLIENT_HEALTH_CHECK_INTERVAL = 60  # 1 minute health check
+CLIENT_COOKIE_REFRESH_THRESHOLD = 540  # 9 minutes - cookie refresh threshold
+
+model_cache = {}
+model_cache_timestamp = 0
+MODEL_CACHE_TTL = 300  # 5 minutes cache TTL
+
+# Background task for client health monitoring
+health_monitor_task = None
+
+# Client pool locks (will be initialized in startup)
+cache_lock = None
+client_pool_lock = None
+
+# Cookie cache management
+cookie_cache = {}
+cookie_cache_file = Path("./temp/.cached_cookies.json")
+cookie_cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+# Initialize configuration variables
 def initialize_config():
     global LMDB_PATH, LMDB_MAX_SIZE, MAX_CHARS_PER_REQUEST, CLIENT_CONFIG
     
@@ -113,15 +142,6 @@ def initialize_config():
         LMDB_MAX_SIZE = int(os.getenv("LMDB_MAX_SIZE", "134217728"))
         MAX_CHARS_PER_REQUEST = int(os.getenv("MAX_CHARS_PER_REQUEST", "900000"))
 
-
-# 新增：添加CORS中间件配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 # Enhanced client management with connection pooling
 gemini_clients = {}
 client_pool_size = 3
@@ -135,6 +155,12 @@ CLIENT_COOKIE_REFRESH_THRESHOLD = 540  # 9 minutes - cookie refresh threshold
 model_cache = {}
 model_cache_timestamp = 0
 MODEL_CACHE_TTL = 300  # 5 minutes cache TTL
+# Background task for client health monitoring
+health_monitor_task = None
+# Enhanced client management with connection pooling and health monitoring  
+# 添加客户端池锁
+cache_lock = None
+client_pool_lock = None  # 将在startup事件中初始化
 
 def get_cached_models() -> Dict[str, Model]:
     """获取缓存的模型列表，减少重复查询"""
@@ -174,13 +200,6 @@ cookie_cache_file = Path("./temp/.cached_cookies.json")
 cookie_cache_file.parent.mkdir(parents=True, exist_ok=True)
 
 
-
-# Background task for client health monitoring
-health_monitor_task = None
-# Enhanced client management with connection pooling and health monitoring  
-# 添加客户端池锁
-cache_lock = None
-client_pool_lock = None  # 将在startup事件中初始化
 
 # 新增：LMDB会话存储类 (融合项目N的持久化会话管理功能)
 class LMDBConversationStore:
@@ -277,6 +296,12 @@ class LMDBConversationStore:
             print(f"⚠️ Error finding reusable session: {str(e)}")
             return None, messages
 
+async def init_locks():
+    """Initialize async locks"""
+    global cache_lock, client_pool_lock
+    cache_lock = asyncio.Lock()
+    client_pool_lock = asyncio.Lock()
+
 # 初始化LMDB存储 (保持单例模式)
 conversation_store = LMDBConversationStore()
 if HAS_ENHANCED_LMDB:
@@ -286,11 +311,7 @@ else:
     # 保持原有存储类
     conversation_store = LMDBConversationStore()
     print("🔧 Using basic LMDB storage")
-async def init_locks():
-    """Initialize async locks"""
-    global cache_lock, client_pool_lock
-    cache_lock = asyncio.Lock()
-    client_pool_lock = asyncio.Lock()
+
 # Cookie缓存管理函数
 async def load_cookie_cache():
     """Load cookie cache from file"""
@@ -631,14 +652,13 @@ async def lifespan(app: FastAPI):
         if browser_cookies.get("__Secure-1PSID"):
             print("✅ Found cookies in browser, will use as fallback")
             credentials_found = True
-    
     if not credentials_found:
         print("⚠️ No credentials found. Server will attempt to use browser cookies if available.")
-    
+
     # Start background health monitor
     health_monitor_task = asyncio.create_task(monitor_client_health())
     print("🏥 Client health monitor started")
-    
+
     # Pre-warm one client with better error handling
     try:
         await get_gemini_client()
@@ -669,12 +689,20 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
     
     print("👋 Enhanced Gemini server shutdown complete")
-
+# Create FastAPI app instance
 app = FastAPI(
     title="Enhanced Gemini API FastAPI Server", 
     version="0.5.0+enhanced",
     description="High-performance Gemini Web API server with intelligent session reuse and enhanced configuration",
     lifespan=lifespan
+)
+# 新增：添加CORS中间件配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Pydantic models for API requests and responses
@@ -1257,9 +1285,9 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
                 available_clients
             )
         elif hasattr(conversation_store, 'find_reusable_session'):
-        # 使用基本的会话复用
+            # 使用基本的会话复用
             stored_session, remaining_messages = conversation_store.find_reusable_session(message_dicts)
-        
+
         if stored_session and remaining_messages:
             print(f"♻️ Using enhanced session reuse, processing {len(remaining_messages)} new messages")
             # 使用存储的客户端ID获取客户端
@@ -1276,7 +1304,7 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
         else:
             # 处理完整对话
             conversation, temp_files = prepare_conversation(request.messages)
-        
+
         model = map_openai_to_gemini_model(request.model)
         print(f"📝 Prepared conversation: {conversation[:200]}...")
         
