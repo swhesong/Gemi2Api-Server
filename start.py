@@ -13,6 +13,14 @@ def setup_environment():
     print("🚀 Enhanced Gemini API Server v0.5.0+enhanced")
     print("=" * 50)
     
+    # 检查Python版本
+    python_version = sys.version_info
+    if python_version < (3, 9):
+        print(f"❌ Python {python_version.major}.{python_version.minor} detected. Requires Python 3.9+")
+        sys.exit(1)
+    else:
+        print(f"✅ Python {python_version.major}.{python_version.minor}.{python_version.micro}")
+    
     # 检查配置文件
     config_file = Path("config.yaml")
     if config_file.exists():
@@ -21,8 +29,13 @@ def setup_environment():
         try:
             import yaml
             with open(config_file, 'r', encoding='utf-8') as f:
-                yaml.safe_load(f)
-            print("✅ YAML config validation passed")
+                config_data = yaml.safe_load(f)
+                if config_data:
+                    print("✅ YAML config validation passed")
+                else:
+                    print("⚠️ YAML config is empty")
+        except ImportError:
+            print("⚠️ PyYAML not available for validation")
         except Exception as e:
             print(f"⚠️ YAML config validation failed: {e}")
     else:
@@ -37,12 +50,16 @@ def setup_environment():
         if value:
             if var in ["SECURE_1PSID", "SECURE_1PSIDTS"]:
                 found_credentials = True
-            print(f"✅ {var}: {value[:10]}...")
+            if len(value) >= 10:
+                print(f"✅ {var}: {value[:10]}...")
+            else:
+                print(f"✅ {var}: Set")
         else:
             print(f"⚪ {var}: Not set")
     
     if not found_credentials and not config_file.exists():
         print("⚠️ No credentials found in environment or config file")
+        print("   The server will attempt to use browser cookies as fallback")
     
     # 检查依赖
     dependencies = [
@@ -51,15 +68,24 @@ def setup_environment():
         ("browser_cookie3", "Browser cookie support"),
         ("loguru", "Enhanced logging"),
         ("pydantic_settings", "YAML configuration"),
+        ("gemini_webapi", "Gemini Web API client"),
+        ("fastapi", "FastAPI framework"),
+        ("uvicorn", "ASGI server"),
     ]
     
+    missing_deps = []
     for module_name, description in dependencies:
         try:
             __import__(module_name)
             print(f"✅ {description} available")
         except ImportError:
-            print(f"⚠️ {description} not available")
+            print(f"❌ {description} not available")
+            missing_deps.append(module_name)
     
+    if missing_deps:
+        print(f"❌ Missing dependencies: {', '.join(missing_deps)}")
+        print("   Install with: uv sync or pip install -r requirements.txt")
+        sys.exit(1)
     print("=" * 50)
 
 def main():
