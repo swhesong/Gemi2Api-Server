@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Union, Dict
 from pathlib import Path
 import re
-
+import logging
 import json
 from fastapi import FastAPI, HTTPException, Depends, Request, Header
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -568,7 +568,7 @@ async def error_handler_middleware(request: Request, call_next) -> Response:
             content={"error": {"message": str(e), "type": "api_error"}}
         )
     except Exception as e:
-        print(f"Unexpected error: {str(e)}", exc_info=True)
+        logging.error(f"Unexpected error: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500, 
             content={"error": {"message": str(e), "type": "internal_server_error"}}
