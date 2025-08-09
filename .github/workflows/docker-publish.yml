@@ -1,4 +1,4 @@
-# .github/workflows/docker-publish.yml (修正版)
+# .github/workflows/docker-publish.yml (极简修正版，用于解决语法错误)
 name: Docker Build and Push
 
 on:
@@ -57,13 +57,3 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-
-      - name: Image digest
-        run: echo "Image digest: ${{ steps.build.outputs.digest }}"
-
-      - name: Update deployment status
-        if: success()
-        run: |
-          echo "✅ Successfully built and pushed:"
-          echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /'
-
