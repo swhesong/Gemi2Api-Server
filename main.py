@@ -113,15 +113,7 @@ def initialize_config():
         LMDB_MAX_SIZE = int(os.getenv("LMDB_MAX_SIZE", "134217728"))
         MAX_CHARS_PER_REQUEST = int(os.getenv("MAX_CHARS_PER_REQUEST", "900000"))
 
-# 调用配置初始化
-initialize_config()
 
-app = FastAPI(
-    title="Enhanced Gemini API FastAPI Server", 
-    version="0.5.0+enhanced",
-    description="High-performance Gemini Web API server with intelligent session reuse and enhanced configuration",
-    lifespan=lifespan
-)
 # 新增：添加CORS中间件配置
 app.add_middleware(
     CORSMiddleware,
@@ -609,6 +601,8 @@ async def cleanup_client(client_id: str):
         except Exception as e:
             print(f"⚠️ Error closing client {client_id}: {str(e)}")
 
+# 调用配置初始化
+initialize_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -676,6 +670,12 @@ async def lifespan(app: FastAPI):
     
     print("👋 Enhanced Gemini server shutdown complete")
 
+app = FastAPI(
+    title="Enhanced Gemini API FastAPI Server", 
+    version="0.5.0+enhanced",
+    description="High-performance Gemini Web API server with intelligent session reuse and enhanced configuration",
+    lifespan=lifespan
+)
 
 # Pydantic models for API requests and responses
 class Message(BaseModel):
@@ -999,7 +999,6 @@ def prepare_conversation(messages: List[Message]) -> tuple[str, List[str]]:
                 content = add_role_tag(message.role, message.content)
                 conversation_parts.append(content)
             elif isinstance(message.content, list):
-
                 text_parts = []
                 for content_part in message.content:
                     if content_part.get("type") == "text":
@@ -1214,19 +1213,20 @@ async def create_new_client(client_id: str) -> GeminiClient:
         return client
 
     except AuthError as auth_e:
-    print(f"❌ Authentication failed for client {client_id}: {str(auth_e)}")
-    raise HTTPException(
-        status_code=401, 
-        detail="Authentication failed. Please check your cookies. SECURE_1PSIDTS may have expired or browser login required."
-    )
+        print(f"❌ Authentication failed for client {client_id}: {str(auth_e)}")
+        raise HTTPException(
+            status_code=401, 
+            detail="Authentication failed. Please check your cookies. SECURE_1PSIDTS may have expired or browser login required."
+        )
     except Exception as e:
-    print(f"❌ Failed to create client {client_id}: {str(e)}")
-    import traceback
-    traceback.print_exc()
-    raise HTTPException(
-        status_code=500, 
-        detail=f"Failed to initialize Gemini client: {str(e)}"
-    )
+        print(f"❌ Failed to create client {client_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to initialize Gemini client: {str(e)}"
+        )
+
 
 # Enhanced chat completions endpoint with better error handling and retry logic
 @app.post("/v1/chat/completions")
@@ -1359,7 +1359,6 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
         
         # 保持原有的流式和非流式响应逻辑
         if request.stream:
-
             async def generate_stream():
                 # 流式输出文本
                 for char in reply_text:
@@ -1407,8 +1406,7 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
                     },
                     "finish_reason": "stop"
                 }]
-            )
-    
+            )    
     except Exception as e:
         print(f"❌ Error generating completion: {str(e)}", exc_info=True)
         raise
