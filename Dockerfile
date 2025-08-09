@@ -66,6 +66,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
+        su-exec \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -87,7 +88,7 @@ RUN groupadd -r appgroup && \
     # 注意：chown 的逻辑移到了 entrypoint.sh 中，这里可以简化或保留
 
 # 切换到这个非root用户
-USER appuser
+# USER appuser
 
 # 暴露应用程序端口
 EXPOSE 8000
@@ -98,4 +99,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # 设置容器的默认启动命令
 CMD ["python", "start.py"]
-
