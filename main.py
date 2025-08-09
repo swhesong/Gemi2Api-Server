@@ -6,7 +6,7 @@ import time
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Tuple, Any
 from pathlib import Path
 from contextlib import asynccontextmanager
 import re
@@ -267,7 +267,7 @@ class LMDBConversationStore:
             print(f"⚠️ Failed to store conversation: {str(e)}")
             return None
     
-    def find_reusable_session(self, messages: List[dict]) -> tuple[dict, List[dict]]:
+    def find_reusable_session(self, messages: List[dict]) -> Tuple[Optional[dict], List[dict]]:
         """Find reusable session for message prefix (融合项目N的会话复用逻辑)"""
         if not self._env:
             return None, messages
@@ -1090,7 +1090,7 @@ def add_role_tag(role: str, content: str, unclose: bool = False) -> str:
     return tagged_content
 
 # 新增：消息分割函数 (融合长消息处理)
-async def send_with_split(client, conversation: str, temp_files: List[str], model) -> Any:
+async def send_with_split(client: Any, conversation: str, temp_files: List[str], model: Any) -> Any:
     """Send conversation with automatic splitting for long messages (项目N的消息分割功能)"""
     if len(conversation) <= MAX_CHARS_PER_REQUEST:
         # 无需分割
@@ -1137,9 +1137,11 @@ async def send_with_split(client, conversation: str, temp_files: List[str], mode
 
 async def get_gemini_client() -> GeminiClient:
     """Get a healthy client from the pool or create a new one"""
+    if client_pool_lock is None:
+        await init_locks()
+
     async with client_pool_lock:
         current_time = time.time()
-        
         # Find a healthy client
         for client_id, client in gemini_clients.items():
             if (hasattr(client, 'running') and client.running and 
@@ -1275,15 +1277,19 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
         
         # 增强的会话复用逻辑
         stored_session, remaining_messages = None, message_dicts
-        
         if HAS_ENHANCED_LMDB and hasattr(conversation_store, 'find_reusable_session'):
             # 使用增强的会话复用算法
             available_clients = list(gemini_clients.keys()) if gemini_clients else ["env_client"]
-            stored_session, remaining_messages = conversation_store.find_reusable_session(
-                model.model_name if hasattr(model, 'model_name') else str(model),
-                message_dicts,
-                available_clients
-            )
+            try:
+                stored_session, remaining_messages = conversation_store.find_reusable_session(
+                    model.model_name if hasattr(model, 'model_name') else str(model),
+                    message_dicts,
+                    available_clients
+                )
+            except Exception as e:
+                print(f"⚠️ Enhanced session reuse failed: {e}")
+                stored_session, remaining_messages = None, message_dicts
+
         elif hasattr(conversation_store, 'find_reusable_session'):
             # 使用基本的会话复用
             stored_session, remaining_messages = conversation_store.find_reusable_session(message_dicts)
@@ -1293,9 +1299,14 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
             # 使用存储的客户端ID获取客户端
             stored_client_id = stored_session.get("client_id")
             if stored_client_id and stored_client_id in gemini_clients:
-                client = gemini_clients[stored_client_id]
-                client_last_used[stored_client_id] = time.time()
-            
+                try:
+                    client = gemini_clients[stored_client_id]
+                    client_last_used[stored_client_id] = time.time()
+                    print(f"♻️ Reusing stored client: {stored_client_id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to reuse stored client {stored_client_id}: {e}")
+                    client = None
+
             # 只处理剩余的消息
             remaining_msg_objects = []
             for msg_dict in remaining_messages:
