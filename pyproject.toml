@@ -3,7 +3,7 @@ name = "gemi2api-server"
 version = "0.5.0+enhanced"
 description = "Enhanced FastAPI server for Gemini Web API with intelligent session reuse, YAML config support, and advanced features."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "browser-cookie3>=0.20.1",
     "fastapi>=0.115.0",
