@@ -1,4 +1,4 @@
-# .github/workflows/docker-publish.yml (极简修正版，用于解决语法错误)
+# .github/workflows/docker-publish.yml (简化版)
 name: Docker Build and Push
 
 on:
@@ -6,17 +6,13 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: devinglaw/genmini2api
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,30 +26,17 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-
       - name: Build and push Docker image
-        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            devinglaw/genmini2api:latest
+            devinglaw/genmini2api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
