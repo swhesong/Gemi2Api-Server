@@ -78,10 +78,13 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --from=builder /app /app
 
 # 创建一个安全的、无登录权限的系统用户来运行应用
-# 并将应用目录的所有权赋予该用户
+COPY entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["entrypoint.sh"]
+# 创建用户 (注意：这里我们先不切换用户，让 entrypoint.sh 以 root 身份运行)
 RUN groupadd -r appgroup && \
-    useradd -r -g appgroup -s /bin/false appuser && \
-    chown -R appuser:appgroup /app
+    useradd -r -g appgroup -s /bin/false appuser
+    # 注意：chown 的逻辑移到了 entrypoint.sh 中，这里可以简化或保留
 
 # 切换到这个非root用户
 USER appuser
