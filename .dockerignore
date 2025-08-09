@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# IDE and OS files
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Environment
+.env
+
+# Python virtual environment
+.venv/
+venv/
+
+# Configuration file that will be mounted at runtime
+config.yaml  # <-- 核心：添加这一行
