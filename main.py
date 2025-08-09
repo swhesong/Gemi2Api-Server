@@ -1451,7 +1451,7 @@ async def chat_completions(request: ChatRequest, _: str = Depends(verify_api_key
                 }]
             )    
     except Exception as e:
-        print(f"❌ Error generating completion: {str(e)}", exc_info=True)
+        logging.error(f"❌ Error generating completion: {str(e)}", exc_info=True)
         raise
     finally:
         # 清理临时文件
