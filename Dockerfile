@@ -1,54 +1,75 @@
-# 使用官方 uv 基础镜像
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# =================================================================
+# STAGE 1: The Builder Stage
+# - Installs build tools and all Python dependencies
+# =================================================================
+FROM python:3.12-slim-bookworm as builder
 
-# 设置工作目录
-WORKDIR /app
+# Set environment variables
+# Set DEBIAN_FRONTEND to noninteractive to avoid prompts
+# Set PATH to include the default location for pip/uv installed binaries
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/root/.local/bin:$PATH"
 
-# 设置为非交互模式，避免 apt-get 在构建时卡住或报错
-ENV DEBIAN_FRONTEND=noninteractive
-# 设置环境变量
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# 复制 pyproject.toml 文件
-# 这样做可以利用 Docker 的层缓存，只有当 pyproject.toml 变化时才重新安装依赖
-COPY pyproject.toml .
-
-# 安装依赖
-# 使用 uv pip install . 来安装当前项目及其在 pyproject.toml 中定义的依赖
-# 使用 --system 标志告诉 uv 在容器的系统 Python 环境中安装
-# 使用 --no-cache-dir 避免缓存增加镜像大小
-# 安装系统依赖（包括编译工具和curl），然后安装Python包，最后清理编译工具
-
-# 安装系统依赖（包括编译工具和curl），然后安装Python包，最后清理编译工具
+# Install system dependencies required for installing uv and building packages
+# We need curl to fetch uv, and gcc/python3-dev to build C extensions like lmdb
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        curl \
         gcc \
-        python3-dev \
-        curl && \
-    uv pip install --system --no-cache-dir --retry 3 . && \
-    apt-get purge -y --auto-remove gcc python3-dev && \
-    apt-get autoremove -y && \
+        python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
+# Install the uv tool itself using the official script
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set the working directory
+WORKDIR /app
+
+# Copy only the dependency definition file first to leverage Docker cache
+COPY pyproject.toml .
+
+# Use uv to install all Python dependencies defined in pyproject.toml
+# --system installs them to the global site-packages directory
+RUN uv pip install --system --no-cache-dir .
 
 
+# =================================================================
+# STAGE 2: The Final Stage
+# - Creates the final, clean, and small production image
+# =================================================================
+FROM python:3.12-slim-bookworm
 
-# 复制所有应用程序文件
+# Set the same environment variables for consistency
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install only the runtime dependencies. In this case, only 'curl' for the healthcheck.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the installed Python packages from the 'builder' stage
+COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
+
+# Copy the rest of the application code
 COPY . .
 
-# 创建必要的目录
-RUN mkdir -p /app/data /app/temp /app/cache
+# Create necessary directories and set executable permission for the start script
+RUN mkdir -p /app/data /app/temp /app/cache && \
+    chmod +x start.py
 
-# 设置权限
-RUN chmod +x start.py
-
-# 暴露端口
+# Expose the application port
 EXPOSE 8000
 
-# 添加健康检查
+# Define a healthcheck to ensure the application is running correctly
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# 使用 start.py 启动应用，它包含了更好的配置检查和初始化
+# Define the command to run the application
 CMD ["python", "start.py"]
+
