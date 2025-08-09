@@ -1,7 +1,7 @@
 [project]
 name = "gemi2api-server"
-version = "0.4.0"
-description = "A high-performance FastAPI server for Gemini Web API, with browser cookie support, advanced logging, and configuration management."
+version = "0.5.0+enhanced"
+description = "Enhanced FastAPI server for Gemini Web API with intelligent session reuse, YAML config support, and advanced features."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,13 +9,20 @@ dependencies = [
     "fastapi>=0.115.14",
     "gemini-webapi>=1.14.3",
     "lmdb>=1.6.2",
+    "orjson>=3.8.0", 
     "loguru>=0.7.3",
+    "pydantic>=2.10.1",
     "pydantic-settings[yaml]>=2.10.1",
     "httpx>=0.25.0",
     "uvicorn[standard]>=0.35.0",
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "python-dotenv>=1.0.0",
+    "PyYAML>=6.0.1",
 ]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 # [uv] 工具配置
 [[tool.uv.index]]
@@ -30,10 +37,10 @@ dev = [
 
 # Ruff 配置
 [tool.ruff]
-line-length = 100  # 设置更标准的行长度
-lint.select = ["E", "F", "W", "I", "RUF"] # 增加了 Ruff 的原生规则 (RUF)
-lint.ignore = ["E501"] # 忽略行长度警告，交由格式化工具处理
+line-length = 100
+lint.select = ["E", "F", "W", "I", "RUF"]
+lint.ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
-indent-style = "space"  # 使用空格缩进
+indent-style = "space"
