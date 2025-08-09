@@ -12,7 +12,7 @@ on:
     inputs:
       tag:
         description: '为手动构建指定一个 Docker 标签 (例如: test-feature)'
-        required: false
+        required: true
         type: string
 
 jobs:
