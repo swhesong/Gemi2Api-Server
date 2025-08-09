@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 单文件方案)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 绝对可靠方案)
 # =================================================================
 
 # =================================================================
@@ -27,15 +27,16 @@ WORKDIR /app
 COPY pyproject.toml ./
 
 # --- 【最终修复方案】 ---
-# 将多行 Python 脚本压缩到一行内，以避免 Dockerfile 解析错误。
-# 这段命令会解析 pyproject.toml，生成一个临时的 requirements.txt，然后用 pip 安装。
-RUN python -m pip install --upgrade pip setuptools wheel && \
+# 1. 明确安装 tomli 作为备用，确保脚本在任何情况下都能运行。
+# 2. 使用 Python 打印每个依赖，然后用 Shell 的 ">" 重定向到文件。
+#    这是最可靠的方式，完全避免了所有棘手的字符转义问题。
+RUN python -m pip install --upgrade pip setuptools wheel tomli && \
     python -c "import sys; \
                try: import tomllib; \
                except ImportError: import tomli as tomllib; \
                with open('pyproject.toml', 'rb') as f: data = tomllib.load(f); \
                deps = data.get('project', {}).get('dependencies', []); \
-               with open('/tmp/requirements.txt', 'w') as f: f.write('\n'.join(deps))" && \
+               for d in deps: print(d)" > /tmp/requirements.txt && \
     pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm -f /tmp/requirements.txt
 
