@@ -72,9 +72,9 @@ class EnhancedConfig(BaseSettings):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
-    # ▼▼▼ 添加部分开始 ▼▼▼
+
     cors: CORSConfig = Field(default_factory=CORSConfig)
-    # ▲▲▲ 添加部分结束 ▲▲▲
+
     
     model_config = SettingsConfigDict(
         env_prefix="CONFIG_",
