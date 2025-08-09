@@ -80,6 +80,7 @@ class EnhancedConfig(BaseSettings):
         super().__init__(**kwargs)
         # 从环境变量加载基本配置
         self._load_from_env()
+        
     def _load_from_env(self):
         """Load configuration from environment variables (保持项目A兼容性)"""
         if os.getenv("SECURE_1PSID"):
@@ -129,7 +130,6 @@ class EnhancedConfig(BaseSettings):
                 print(f"⚠️ Invalid MAX_CHARS_PER_REQUEST value: {os.getenv('MAX_CHARS_PER_REQUEST')}, using default")
 
 
-
 # 全局配置实例
 def create_config():
     """Create configuration instance with proper error handling"""
@@ -161,6 +161,7 @@ def create_config():
                 max_size=int(os.getenv("LMDB_MAX_SIZE", "134217728"))
             )
         )
+
 
 # 全局配置实例
 g_config = create_config()
