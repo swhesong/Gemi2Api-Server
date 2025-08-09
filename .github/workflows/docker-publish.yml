@@ -1,8 +1,20 @@
+# =================================================================
+# GitHub Action: Docker Build and Push
+# -----------------------------------------------------------------
+# 触发条件: 当代码被推送到 'main' 分支时自动运行。
+# 功能:
+# 1. 为 Linux 平台生成一个确定性的依赖锁文件 (uv.lock)。
+# 2. 使用 Docker Buildx 构建支持 amd64 和 arm64 架构的多平台镜像。
+# 3. 将构建好的镜像推送到 Docker Hub，并打上三个标签：
+#    - latest: 一个指向多平台镜像的统一标签。
+#    - amd64-latest: 指向 amd64 平台的镜像。
+#    - arm64-latest: 指向 arm64 平台的镜像。
+# =================================================================
 name: Docker Build and Push
 
 on:
   push:
-    branches: [ "main" ] # 当 main 分支有更新时触发
+    branches: [ "main" ]
 
 jobs:
   build-and-push:
@@ -12,46 +24,53 @@ jobs:
       packages: write
 
     steps:
+      # 第一步：检出代码库
+      # 使工作流可以访问您的项目文件。
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ================== 新增的关键步骤 ==================
-      # 这一步将在构建 Docker 镜像之前，在 GitHub Runner (Linux) 环境中
-      # 为我们的项目生成一个与 Linux 平台匹配的 uv.lock 文件。
+      # 第二步：生成平台特定的依赖锁文件
+      # 这是实现确定性构建的关键。
+      # 它在CI环境中运行 `uv lock`，生成一个与 Docker 构建环境 (Linux) 完全匹配的 `uv.lock`。
       - name: Generate platform-specific lockfile
         run: |
-          # 安装 uv 工具
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          # 将 uv 添加到 PATH，以便后续命令可以找到它
           source /home/runner/.cargo/env
-          # 根据 pyproject.toml 生成一个与 Linux (构建环境) 匹配的 uv.lock 文件
-          # 这个新生成的 uv.lock 将在后续的 build-push 步骤中被复制到 Docker 镜像里
           uv lock --python 3.12
-          echo "✅ Generated uv.lock for Linux platform"
-      # ====================================================
+          echo "✅ Generated uv.lock for Linux platform. This file will be used in the Docker build."
 
+      # 第三步：设置多平台构建环境
+      # QEMU 用于模拟不同的 CPU 架构。
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # Buildx 是 Docker 的一个插件，提供了多平台构建等高级功能。
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 第四步：登录到 Docker Hub
+      # 使用存储在仓库 Secrets 中的凭据进行身份验证。
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      # 第五步：构建并推送镜像
+      # 这是整个工作流的核心步骤。
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
+          # Dockerfile 的路径。 `.` 表示项目根目录。
           context: .
+          # 指定要构建的目标平台。
           platforms: linux/amd64,linux/arm64
+          # `true` 表示在构建成功后推送到镜像仓库。
           push: true
+          # 为镜像打上多个标签。这里的格式是正确的，不会引发错误。
           tags: |
             devinglaw/genmini2api:latest
             devinglaw/genmini2api:amd64-latest
             devinglaw/genmini2api:arm64-latest
-          # 移除 build-args，因为镜像源已在 pyproject.toml 中配置
-          # build-args: |
-          #   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+          # 注意：build-args 已被移除，因为镜像源现在由 `pyproject.toml` 和 `uv` 管理，
+          # 这使得构建过程更加内聚和可移植。
