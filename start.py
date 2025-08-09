@@ -15,7 +15,7 @@ def setup_environment():
     
     # 检查Python版本
     python_version = sys.version_info
-    if python_version < (3, 9):
+    if python_version < (3, 10):
         print(f"❌ Python {python_version.major}.{python_version.minor} detected. Requires Python 3.9+")
         sys.exit(1)
     else:
