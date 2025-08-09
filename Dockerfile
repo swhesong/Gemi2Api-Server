@@ -19,14 +19,19 @@ COPY pyproject.toml .
 # 使用 --system 标志告诉 uv 在容器的系统 Python 环境中安装
 # 使用 --no-cache-dir 避免缓存增加镜像大小
 # 安装系统依赖（包括编译工具和curl），然后安装Python包，最后清理编译工具
+
+# 安装系统依赖（包括编译工具和curl），然后安装Python包，最后清理编译工具
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential \
+        gcc \
         python3-dev \
         curl && \
     uv pip install --system --no-cache-dir --retry 3 . && \
-    apt-get purge -y --auto-remove build-essential python3-dev && \
+    apt-get purge -y --auto-remove gcc python3-dev && \
+    apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
+
+
 
 
 # 复制所有应用程序文件
