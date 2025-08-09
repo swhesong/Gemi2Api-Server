@@ -53,6 +53,16 @@ class LoggingConfig(BaseModel):
         default="INFO", description="Logging level"
     )
 
+# ▼▼▼ 添加部分开始 ▼▼▼
+class CORSConfig(BaseModel):
+    """CORS configuration"""
+    enabled: bool = Field(default=True, description="Enable CORS support")
+    allow_origins: List[str] = Field(default_factory=lambda: ["*"], description="List of allowed origins")
+    allow_credentials: bool = Field(default=True, description="Allow credentials in CORS requests")
+    allow_methods: List[str] = Field(default_factory=lambda: ["*"], description="List of allowed HTTP methods")
+    allow_headers: List[str] = Field(default_factory=lambda: ["*"], description="List of allowed headers")
+# ▲▲▲ 添加部分结束 ▲▲▲
+
 
 class EnhancedConfig(BaseSettings):
     """Enhanced configuration with YAML support"""
@@ -61,6 +71,10 @@ class EnhancedConfig(BaseSettings):
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+
+    # ▼▼▼ 添加部分开始 ▼▼▼
+    cors: CORSConfig = Field(default_factory=CORSConfig)
+    # ▲▲▲ 添加部分结束 ▲▲▲
     
     model_config = SettingsConfigDict(
         env_prefix="CONFIG_",
