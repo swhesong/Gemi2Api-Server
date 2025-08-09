@@ -1,5 +1,5 @@
 # =================================================================
-# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版)
+# Gemi2Api-Server Dockerfile (多阶段 & 多平台最终版 - 保险方案)
 # =================================================================
 
 # =================================================================
@@ -12,7 +12,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# 安装构建依赖
 # 安装构建依赖，并添加 ca-certificates, gzip, unzip 等工具，
 # 以确保安装脚本在多平台环境下能正确运行。
 RUN apt-get update && \
@@ -31,10 +30,25 @@ WORKDIR /app
 # 复制依赖定义文件
 COPY pyproject.toml ./
 
-# --- 【关键修复】 ---
-# 在同一层中安装 uv，并使用其绝对路径 /root/.cargo/bin/uv 来执行，彻底避免 "command not found" (exit 127) 错误。
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    /root/.cargo/bin/uv pip install --no-cache-dir --no-dev --system .
+# --- 【保险修复方案】 ---
+# 如果 uv 仍有问题，回退到传统 pip 方式，但保持多阶段构建
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
+deps = data['project']['dependencies']
+with open('/tmp/requirements.txt', 'w') as f:
+    for dep in deps:
+        f.write(f'{dep}\n')
+" && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm -f /tmp/requirements.txt
 
 # =================================================================
 # STAGE 2: The Final Stage (这部分无需改动)
@@ -55,6 +69,7 @@ WORKDIR /app
 
 COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
+
 COPY . .
 
 RUN groupadd -g 1000 nobody && \
@@ -64,6 +79,7 @@ RUN groupadd -g 1000 nobody && \
     chown -R nobody:nobody /app
 
 USER nobody
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
