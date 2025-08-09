@@ -13,9 +13,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 # 安装构建依赖
+# 安装构建依赖，并添加 ca-certificates, gzip, unzip 等工具，
+# 以确保安装脚本在多平台环境下能正确运行。
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
+        ca-certificates \
+        gzip \
+        unzip \
         gcc \
         python3-dev \
         build-essential && \
